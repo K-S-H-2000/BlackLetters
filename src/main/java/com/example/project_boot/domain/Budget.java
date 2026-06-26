@@ -5,7 +5,10 @@ import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "budgets")
@@ -30,13 +33,21 @@ public class Budget {
     private LocalDate budgetMonth;
 
     @Column(name = "amount", nullable = false)
-    private Integer amount = 0;
+    private BigDecimal amount = BigDecimal.ZERO;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @PrePersist
+    protected void onCreate() {
+        this.createdAt = LocalDateTime.now();
+    }
 
     @Builder
-    public Budget(User user, Category category, LocalDate budgetMonth, Integer amount) {
+    public Budget(User user, Category category, LocalDate budgetMonth, BigDecimal amount) {
         this.user = user;
         this.category = category;
         this.budgetMonth = budgetMonth;
-        this.amount = amount != null ? amount : 0;
+        this.amount = amount != null ? amount : BigDecimal.ZERO;
     }
 }

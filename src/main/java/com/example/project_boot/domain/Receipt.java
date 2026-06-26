@@ -45,6 +45,14 @@ public class Receipt {
     @Column(name = "raw_ocr_text", columnDefinition = "TEXT")
     private String rawOcrText;
 
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @PrePersist
+    protected void onCreate() {
+        this.createdAt = LocalDateTime.now();
+    }
+
     @Builder
     public Receipt(User user, Category category, String merchantName, LocalDateTime transactionDate, Integer totalAmount, String imageUrl, String ocrStatus, String rawOcrText) {
         this.user = user;

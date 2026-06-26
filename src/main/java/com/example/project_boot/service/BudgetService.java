@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -29,7 +30,7 @@ public class BudgetService {
     }
 
     @Transactional
-    public Budget setBudget(Long userId, Long categoryId, String yearMonth, Integer amount) {
+    public Budget setBudget(Long userId, Long categoryId, String yearMonth, BigDecimal amount) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
         Category category = categoryRepository.findById(categoryId)
@@ -41,7 +42,8 @@ public class BudgetService {
         List<Budget> existingBudgets = budgetRepository.findByUserUserIdAndBudgetMonth(userId, budgetDate);
         for (Budget existing : existingBudgets) {
             if (existing.getCategory().getCategoryId().equals(categoryId)) {
-                // JPA Dirty Checking을 위해 setter 사용하거나 새 객체로 대체. 여기서는 삭제 후 재삽입 방식 혹은 엔티티 update 메소드 필요
+                // JPA Dirty Checking을 위해 setter 사용하거나 새 객체로 대체. 여기서는 삭제 후 재삽입 방식 혹은 엔티티 update
+                // 메소드 필요
                 budgetRepository.delete(existing);
             }
         }
