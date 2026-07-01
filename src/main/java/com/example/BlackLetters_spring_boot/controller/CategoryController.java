@@ -29,8 +29,29 @@ public class CategoryController {
         return ResponseEntity.ok(categoryService.createCustomCategory(userId, request.getName()));
     }
 
+    @PatchMapping("/{categoryId}")
+    public ResponseEntity<Category> updateCategory(
+            @AuthenticationPrincipal Long userId,
+            @PathVariable Long categoryId,
+            @RequestBody UpdateCategoryRequest request) {
+        return ResponseEntity.ok(categoryService.updateCategory(userId, categoryId, request.getName()));
+    }
+
+    @DeleteMapping("/{categoryId}")
+    public ResponseEntity<Void> deleteCategory(
+            @AuthenticationPrincipal Long userId,
+            @PathVariable Long categoryId) {
+        categoryService.deleteCategory(userId, categoryId);
+        return ResponseEntity.noContent().build();
+    }
+
     @Data
     static class CreateCategoryRequest {
+        private String name;
+    }
+
+    @Data
+    static class UpdateCategoryRequest {
         private String name;
     }
 }

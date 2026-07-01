@@ -1,9 +1,6 @@
 package com.example.BlackLetters_spring_boot.service;
 
-import com.example.BlackLetters_spring_boot.domain.Category;
-import com.example.BlackLetters_spring_boot.domain.Receipt;
-import com.example.BlackLetters_spring_boot.domain.ReceiptItem;
-import com.example.BlackLetters_spring_boot.domain.User;
+import com.example.BlackLetters_spring_boot.domain.*;
 import com.example.BlackLetters_spring_boot.persistence.CategoryRepository;
 import com.example.BlackLetters_spring_boot.persistence.ReceiptItemRepository;
 import com.example.BlackLetters_spring_boot.persistence.ReceiptRepository;
@@ -35,40 +32,39 @@ public class ReceiptService {
         Category category = categoryRepository.findById(categoryId)
                 .orElseThrow(() -> new IllegalArgumentException("Category not found"));
 
-        // 1. S3 업로드
-        String imageUrl = s3UploadService.uploadFile(file);
+        // 1. S3 업로드 (경로만 저장)
+        String imagePath = s3UploadService.uploadFile(file);
 
-        // 2. OCR 텍스트 추출
-        Map<String, Object> extractedData = textractService.extractExpenseInfo(file);
-        
-        String merchantName = (String) extractedData.get("merchantName");
-        Integer totalAmount = (Integer) extractedData.get("totalAmount");
-        LocalDateTime receiptDate = (LocalDateTime) extractedData.get("receiptDate");
-        String ocrStatus = (String) extractedData.get("ocrStatus");
-        String rawOcrText = (String) extractedData.get("rawOcrText");
-
-        // 3. 영수증 마스터 저장
+        // 2. PENDING 상태로 먼저 저장
         Receipt receipt = Receipt.builder()
                 .user(user)
                 .category(category)
-                .merchantName(merchantName)
-                .transactionDate(receiptDate)
-                .totalAmount(totalAmount)
-                .imageUrl(imageUrl)
-                .ocrStatus(ocrStatus)
-                .rawOcrText(rawOcrText)
+                .imagePath(imagePath)
+                .ocrStatus(OcrStatus.PENDING)
                 .build();
-        
         receipt = receiptRepository.save(receipt);
 
-        // 4. 품목 리스트 저장
+        // 3. OCR 처리
+        Map<String, Object> extractedData = textractService.extractExpenseInfo(file);
+
+        String merchantName = (String) extractedData.get("merchantName");
+        Integer totalAmount = (Integer) extractedData.get("totalAmount");
+        LocalDateTime receiptDate = (LocalDateTime) extractedData.get("receiptDate");
+        String ocrStatusStr = (String) extractedData.get("ocrStatus");
+        String rawOcrText = (String) extractedData.get("rawOcrText");
+        OcrStatus ocrStatus = OcrStatus.valueOf(ocrStatusStr);
+
+        // 4. OCR 결과로 영수증 업데이트 (COMPLETED 또는 FAILED)
+        receipt.updateOcrResult(ocrStatus, merchantName, totalAmount, receiptDate, rawOcrText);
+
+        // 5. 품목 리스트 저장
         List<Map<String, Object>> items = (List<Map<String, Object>>) extractedData.get("items");
         if (items != null) {
             for (Map<String, Object> itemData : items) {
                 String itemName = (String) itemData.get("itemName");
                 Integer unitPrice = (Integer) itemData.get("unitPrice");
                 Integer quantity = (Integer) itemData.get("quantity");
-                
+
                 ReceiptItem item = ReceiptItem.builder()
                         .receipt(receipt)
                         .itemName(itemName)

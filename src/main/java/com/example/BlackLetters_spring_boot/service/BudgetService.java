@@ -10,9 +10,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -24,13 +24,12 @@ public class BudgetService {
 
     @Transactional(readOnly = true)
     public List<Budget> getMonthlyBudgets(Long userId, String yearMonth) {
-        // yearMonth format: YYYY-MM
         LocalDate budgetDate = LocalDate.parse(yearMonth + "-01");
         return budgetRepository.findByUserUserIdAndBudgetMonth(userId, budgetDate);
     }
 
     @Transactional
-    public Budget setBudget(Long userId, Long categoryId, String yearMonth, BigDecimal amount) {
+    public Budget setBudget(Long userId, Long categoryId, String yearMonth, Integer amount) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
         Category category = categoryRepository.findById(categoryId)
@@ -38,14 +37,13 @@ public class BudgetService {
 
         LocalDate budgetDate = LocalDate.parse(yearMonth + "-01");
 
-        // 이미 해당 월/카테고리에 예산이 있으면 업데이트, 없으면 생성
-        List<Budget> existingBudgets = budgetRepository.findByUserUserIdAndBudgetMonth(userId, budgetDate);
-        for (Budget existing : existingBudgets) {
-            if (existing.getCategory().getCategoryId().equals(categoryId)) {
-                // JPA Dirty Checking을 위해 setter 사용하거나 새 객체로 대체. 여기서는 삭제 후 재삽입 방식 혹은 엔티티 update
-                // 메소드 필요
-                budgetRepository.delete(existing);
-            }
+        // 이미 존재하면 UPDATE, 없으면 INSERT
+        Optional<Budget> existing = budgetRepository
+                .findByUserUserIdAndCategoryCategoryIdAndBudgetMonth(userId, categoryId, budgetDate);
+
+        if (existing.isPresent()) {
+            existing.get().updateAmount(amount);
+            return existing.get(); // JPA dirty checking으로 자동 UPDATE
         }
 
         Budget budget = Budget.builder()

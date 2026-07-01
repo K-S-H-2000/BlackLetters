@@ -19,6 +19,7 @@ public class CategoryService {
 
     @Transactional(readOnly = true)
     public List<Category> getUserCategories(Long userId) {
+        // is_active=true인 카테고리만 반환
         return categoryRepository.findGlobalAndUserCategories(userId);
     }
 
@@ -33,5 +34,43 @@ public class CategoryService {
                 .build();
 
         return categoryRepository.save(category);
+    }
+
+    @Transactional
+    public void deleteCategory(Long userId, Long categoryId) {
+        Category category = categoryRepository.findById(categoryId)
+                .orElseThrow(() -> new IllegalArgumentException("Category not found"));
+
+        // 시스템 기본 카테고리(user_id IS NULL)는 삭제 불가
+        if (category.getUser() == null) {
+            throw new IllegalArgumentException("기본 카테고리는 삭제할 수 없습니다.");
+        }
+
+        // 다른 사용자의 카테고리 삭제 불가
+        if (!category.getUser().getUserId().equals(userId)) {
+            throw new IllegalArgumentException("권한이 없습니다.");
+        }
+
+        // 실제 삭제 아닌 소프트 삭제 (is_active = false)
+        category.deactivate();
+    }
+
+    @Transactional
+    public Category updateCategory(Long userId, Long categoryId, String name) {
+        Category category = categoryRepository.findById(categoryId)
+                .orElseThrow(() -> new IllegalArgumentException("Category not found"));
+
+        // 시스템 기본 카테고리 수정 불가
+        if (category.getUser() == null) {
+            throw new IllegalArgumentException("기본 카테고리는 수정할 수 없습니다.");
+        }
+
+        // 다른 사용자의 카테고리 수정 불가
+        if (!category.getUser().getUserId().equals(userId)) {
+            throw new IllegalArgumentException("권한이 없습니다.");
+        }
+
+        category.updateName(name);
+        return category;
     }
 }

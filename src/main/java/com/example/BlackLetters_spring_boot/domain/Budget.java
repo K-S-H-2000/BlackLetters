@@ -5,13 +5,21 @@ import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-
-import java.math.BigDecimal;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "budgets")
+@Table(
+    name = "budgets",
+    uniqueConstraints = {
+        @UniqueConstraint(
+            name = "uk_budget_user_category_month",
+            columnNames = {"user_id", "category_id", "budget_month"}
+        )
+    }
+)
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Budget {
@@ -23,6 +31,7 @@ public class Budget {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
+    @OnDelete(action = OnDeleteAction.CASCADE)
     private User user;
 
     @ManyToOne(fetch = FetchType.LAZY)
@@ -33,7 +42,7 @@ public class Budget {
     private LocalDate budgetMonth;
 
     @Column(name = "amount", nullable = false)
-    private BigDecimal amount = BigDecimal.ZERO;
+    private Integer amount = 0;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
@@ -44,10 +53,14 @@ public class Budget {
     }
 
     @Builder
-    public Budget(User user, Category category, LocalDate budgetMonth, BigDecimal amount) {
+    public Budget(User user, Category category, LocalDate budgetMonth, Integer amount) {
         this.user = user;
         this.category = category;
         this.budgetMonth = budgetMonth;
-        this.amount = amount != null ? amount : BigDecimal.ZERO;
+        this.amount = amount != null ? amount : 0;
+    }
+
+    public void updateAmount(Integer amount) {
+        this.amount = amount;
     }
 }

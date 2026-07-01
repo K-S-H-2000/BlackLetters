@@ -8,7 +8,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 @RestController
@@ -38,6 +37,6 @@ public class BudgetController {
     static class SetBudgetRequest {
         private Long categoryId;
         private String yearMonth; // "YYYY-MM"
-        private BigDecimal amount;
+        private Integer amount;   // 소수점 없는 정수
     }
 }
