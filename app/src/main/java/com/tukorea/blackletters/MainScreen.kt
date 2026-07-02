@@ -263,6 +263,7 @@ fun UsageDetailScreen(
     onBack: () -> Unit,
     onUploadClick: () -> Unit
 ) {
+    // 더미데이터 생성 코드
     val usageItems = remember(selectedMonth) {
         List(12) { i ->
             UsageItem(
