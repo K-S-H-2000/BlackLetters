@@ -159,4 +159,18 @@ public class ReceiptService {
         String imageUrl = s3UploadService.getPresignedUrl(receipt.getImagePath());
         return new ReceiptDetailResponse(receipt, imageUrl, updatedItems);
     }
+
+    // 영수증 삭제
+    @Transactional
+    public void deleteReceipt(Long userId, Long receiptId) {
+        Receipt receipt = receiptRepository.findById(receiptId)
+                .orElseThrow(() -> new IllegalArgumentException("영수증을 찾을 수 없습니다."));
+
+        if (!receipt.getUser().getUserId().equals(userId)) {
+            throw new IllegalArgumentException("권한이 없습니다.");
+        }
+
+        receiptItemRepository.deleteByReceiptReceiptId(receiptId);
+        receiptRepository.deleteById(receiptId);
+    }
 }

@@ -77,9 +77,9 @@ public class Receipt {
     public void updateOcrResult(OcrStatus ocrStatus, String merchantName, Integer totalAmount,
                                 LocalDateTime transactionDate, String rawOcrText) {
         this.ocrStatus = ocrStatus;
-        this.merchantName = merchantName;
-        this.totalAmount = totalAmount != null ? totalAmount : 0;
-        this.transactionDate = transactionDate;
-        this.rawOcrText = rawOcrText;
+        if (merchantName != null) this.merchantName = merchantName;
+        if (totalAmount != null) this.totalAmount = totalAmount;
+        if (transactionDate != null) this.transactionDate = transactionDate;
+        if (rawOcrText != null) this.rawOcrText = rawOcrText;
     }
 }

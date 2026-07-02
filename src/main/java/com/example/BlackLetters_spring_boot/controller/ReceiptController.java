@@ -61,6 +61,15 @@ public class ReceiptController {
         ));
     }
 
+    // 영수증 삭제
+    @DeleteMapping("/{receiptId}")
+    public ResponseEntity<Void> deleteReceipt(
+            @AuthenticationPrincipal Long userId,
+            @PathVariable Long receiptId) {
+        receiptService.deleteReceipt(userId, receiptId);
+        return ResponseEntity.noContent().build();
+    }
+
     @Data
     static class UpdateReceiptRequest {
         private String merchantName;
