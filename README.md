@@ -43,7 +43,14 @@ src/main/java/com/example/BlackLetters_spring_boot/
 ├── config/                 # 설정 클래스 (AWS, Security 등)
 │   ├── AwsConfig.java      # AWS S3 클라이언트 빈 등록
 │   └── security/           # Security & JWT 필터 및 공급자
-├── controller/             # REST API Controller 레이어
+├── controller/             # REST API Controller 레이어 및 응답 DTO
+│   ├── AuthController.java
+│   ├── BudgetController.java
+│   ├── CategoryController.java
+│   ├── ReceiptController.java
+│   ├── ReceiptResponse.java # 영수증 조회 응답 DTO (S3 presigned URL 적용)
+│   ├── ReceiptDetailResponse.java # 영수증 상세 응답 DTO
+│   └── StatisticsController.java # 통계 컨트롤러
 ├── domain/                 # JPA Entity 클래스 (Domain Models)
 │   ├── Budget.java         # 예산 엔티티 (BigDecimal 적용)
 │   ├── Category.java       # 지출 카테고리 엔티티
@@ -57,7 +64,8 @@ src/main/java/com/example/BlackLetters_spring_boot/
     ├── CategoryService.java# 카테고리 관리 로직
     ├── S3UploadService.java# AWS S3 파일 업로드
     ├── GeminiOcrService.java# Gemini API OCR 텍스트 추출 및 분석
-    └── ReceiptService.java # 영수증 저장 및 OCR 통합 처리
+    ├── ReceiptService.java # 영수증 저장 및 OCR 통합 처리
+    └── StatisticsService.java # 카테고리별 소비 및 예산 대비 통계 집계
 ```
 
 ---
@@ -75,20 +83,28 @@ src/main/java/com/example/BlackLetters_spring_boot/
 ## 🔑 주요 API 명세 (API Endpoints)
 
 ### 1. 인증 (Authentication)
-* `POST /api/v1/auth/signup` : 회원 가입
-* `POST /api/v1/auth/login` : 로그인 및 JWT 토큰 발급
+* `POST /api/v1/auth/kakao` : 카카오 로그인 및 자동 회원가입
 
 ### 2. 카테고리 (Category)
 * `GET /api/v1/categories` : 카테고리 목록 조회
 * `POST /api/v1/categories` : 새 카테고리 추가
+* `PATCH /api/v1/categories/{categoryId}` : 카테고리 수정
+* `DELETE /api/v1/categories/{categoryId}` : 카테고리 삭제
 
 ### 3. 예산 (Budget)
 * `GET /api/v1/budgets?yearMonth=YYYY-MM` : 특정 월의 카테고리별 예산 목록 조회
 * `POST /api/v1/budgets` : 특정 카테고리의 예산 설정 및 수정 (BigDecimal 대응)
 
 ### 4. 영수증 (Receipt)
-* `POST /api/v1/receipts` : 영수증 이미지 업로드 및 OCR 분석 요청
-* `GET /api/v1/receipts` : 사용자의 영수증 목록 및 소비 내역 조회
+* `POST /api/v1/receipts` : 영수증 이미지 업로드 및 OCR 분석 요청 (Multipart Form-Data)
+* `GET /api/v1/receipts` : 사용자의 영수증 목록 및 소비 내역 조회 (S3 Presigned URL 적용)
+* `GET /api/v1/receipts/{receiptId}` : 영수증 상세 조회 (세부 품목 리스트 포함)
+* `PATCH /api/v1/receipts/{receiptId}` : 영수증 내용 수정 (OCR 결과 오차 직접 교정)
+* `DELETE /api/v1/receipts/{receiptId}` : 영수증 내역 삭제
+
+### 5. 통계 (Statistics)
+* `GET /api/v1/statistics/monthly?yearMonth=YYYY-MM` : 월별 카테고리별 지출 통계 조회
+* `GET /api/v1/statistics/budget?yearMonth=YYYY-MM` : 카테고리 예산 대비 사용률 통계 조회
 
 ---
 
