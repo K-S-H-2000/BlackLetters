@@ -1,0 +1,19 @@
+{
+    "sqltools.connections": [
+        {
+            "mysqlOptions": {
+                "authProtocol": "default",
+                "enableSsl": "Disabled",
+                "charset": "UTF8MB4_GENERAL_CI"
+            },
+            "ssh": "Disabled",
+            "previewLimit": 50,
+            "server": "43.202.24.80",
+            "port": 3306,
+            "driver": "MySQL",
+            "name": "blackletters",
+            "database": "receipt_app",
+            "username": "root"
+        }
+    ]
+}

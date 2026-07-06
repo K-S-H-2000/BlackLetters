@@ -86,7 +86,26 @@ CREATE TABLE budgets (
         UNIQUE (user_id, category_id, budget_month),
     CONSTRAINT chk_budgets_amount CHECK (amount >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
+-- 월별 카테고리 집계 요약 테이블 (DE 배치 파이프라인 적재 대상)
+CREATE TABLE monthly_summary (
+    summary_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id       BIGINT UNSIGNED NOT NULL,
+    category_id   BIGINT UNSIGNED NOT NULL,
+    budget_month  DATE NOT NULL,
+    total_spent   DECIMAL(12,0) NOT NULL DEFAULT 0,
+    usage_rate    DECIMAL(5,2),
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_summary_user
+        FOREIGN KEY (user_id) REFERENCES users(user_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_summary_category
+        FOREIGN KEY (category_id) REFERENCES categories(category_id)
+        ON DELETE RESTRICT,
+    CONSTRAINT uq_summary_period
+        UNIQUE (user_id, category_id, budget_month),
+    INDEX idx_summary_user_month (user_id, budget_month)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 -- 시스템 기본 카테고리 시드 데이터 (user_id = NULL → 모든 사용자 공용)
 INSERT INTO categories (user_id, name) VALUES
     (NULL, '식비'),
