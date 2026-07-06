@@ -50,7 +50,9 @@ public class GeminiOcrService {
 
             // Build request payload using Jackson Node API
             ObjectNode textPart = objectMapper.createObjectNode();
-            textPart.put("text", "Extract receipt details. Return JSON matching the schema.");
+            textPart.put("text", "Analyze this receipt image and extract the information. " +
+                    "For the category field, you MUST return exactly one of these Korean strings: 식비, 카페/간식, 교통, 쇼핑, 생활용품, 의료/건강, 문화/여가, 통신, 기타. " +
+                    "Do NOT translate or modify the category value. Return JSON matching the schema.");
 
             ObjectNode inlineData = objectMapper.createObjectNode();
             inlineData.put("mimeType", mimeType);
@@ -107,16 +109,21 @@ public class GeminiOcrService {
             itemsSchema.put("type", "ARRAY");
             itemsSchema.set("items", itemSchema);
 
+            ObjectNode categorySchema = objectMapper.createObjectNode();
+            categorySchema.put("type", "STRING");
+
             ObjectNode schemaProperties = objectMapper.createObjectNode();
             schemaProperties.set("merchantName", merchantNameSchema);
             schemaProperties.set("receiptDate", receiptDateSchema);
             schemaProperties.set("totalAmount", totalAmountSchema);
+            schemaProperties.set("category", categorySchema);
             schemaProperties.set("items", itemsSchema);
 
             ArrayNode requiredFields = objectMapper.createArrayNode();
             requiredFields.add("merchantName");
             requiredFields.add("receiptDate");
             requiredFields.add("totalAmount");
+            requiredFields.add("category");
             requiredFields.add("items");
 
             ObjectNode responseSchema = objectMapper.createObjectNode();
@@ -161,6 +168,7 @@ public class GeminiOcrService {
                     extractedData.put("merchantName", data.path("merchantName").asText(""));
                     extractedData.put("totalAmount", data.path("totalAmount").asInt(0));
                     extractedData.put("receiptDate", parseReceiptDate(data.path("receiptDate").asText("")));
+                    extractedData.put("category", data.path("category").asText("기타"));
 
                     JsonNode itemsNode = data.path("items");
                     if (itemsNode.isArray()) {
@@ -186,6 +194,7 @@ public class GeminiOcrService {
             extractedData.put("merchantName", "더미 상호명(Gemini 연결안됨)");
             extractedData.put("totalAmount", 15000);
             extractedData.put("receiptDate", LocalDateTime.now());
+            extractedData.put("category", "기타");
 
             Map<String, Object> dummyItem = new HashMap<>();
             dummyItem.put("itemName", "더미 상품");

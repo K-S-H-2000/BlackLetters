@@ -29,16 +29,30 @@ public class ReceiptService {
     private final GeminiOcrService geminiOcrService;
 
     @Transactional
-    public Receipt processReceiptAndSave(Long userId, Long categoryId, MultipartFile file) throws Exception {
+    public Receipt processReceiptAndSave(Long userId, MultipartFile file) throws Exception {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
-        Category category = categoryRepository.findById(categoryId)
-                .orElseThrow(() -> new IllegalArgumentException("Category not found"));
 
         // 1. S3 업로드 (경로만 저장)
         String imagePath = s3UploadService.uploadFile(file);
 
-        // 2. PENDING 상태로 먼저 저장
+        // 2. OCR 먼저 실행 (카테고리 포함)
+        Map<String, Object> extractedData = geminiOcrService.extractExpenseInfo(file);
+
+        String merchantName = (String) extractedData.get("merchantName");
+        Integer totalAmount = (Integer) extractedData.get("totalAmount");
+        LocalDateTime receiptDate = (LocalDateTime) extractedData.get("receiptDate");
+        String ocrStatusStr = (String) extractedData.get("ocrStatus");
+        String rawOcrText = (String) extractedData.get("rawOcrText");
+        String categoryName = (String) extractedData.get("category");
+        OcrStatus ocrStatus = OcrStatus.valueOf(ocrStatusStr);
+
+        // 3. AI가 판단한 카테고리 이름으로 DB 조회, 없으면 "기타"로 fallback
+        Category category = categoryRepository.findGlobalCategoryByName(categoryName)
+                .orElseGet(() -> categoryRepository.findGlobalCategoryByName("기타")
+                        .orElseThrow(() -> new IllegalArgumentException("기본 카테고리를 찾을 수 없습니다.")));
+
+        // 4. PENDING 상태로 먼저 저장
         Receipt receipt = Receipt.builder()
                 .user(user)
                 .category(category)
@@ -47,17 +61,7 @@ public class ReceiptService {
                 .build();
         receipt = receiptRepository.save(receipt);
 
-        // 3. OCR 텍스트 추출
-        Map<String, Object> extractedData = geminiOcrService.extractExpenseInfo(file);
-
-        String merchantName = (String) extractedData.get("merchantName");
-        Integer totalAmount = (Integer) extractedData.get("totalAmount");
-        LocalDateTime receiptDate = (LocalDateTime) extractedData.get("receiptDate");
-        String ocrStatusStr = (String) extractedData.get("ocrStatus");
-        String rawOcrText = (String) extractedData.get("rawOcrText");
-        OcrStatus ocrStatus = OcrStatus.valueOf(ocrStatusStr);
-
-        // 4. OCR 결과로 영수증 업데이트 (COMPLETED 또는 FAILED)
+        // 5. OCR 결과로 영수증 업데이트 (COMPLETED 또는 FAILED)
         receipt.updateOcrResult(ocrStatus, merchantName, totalAmount, receiptDate, rawOcrText);
 
         // 5. 품목 리스트 저장

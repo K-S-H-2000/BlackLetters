@@ -20,14 +20,13 @@ public class ReceiptController {
 
     private final ReceiptService receiptService;
 
-    // 영수증 등록 (사진 업로드 + OCR)
+    // 영수증 등록 (사진 업로드 + OCR, 카테고리 AI 자동 판단)
     @PostMapping
     public ResponseEntity<Receipt> uploadReceipt(
             @AuthenticationPrincipal Long userId,
-            @RequestParam("categoryId") Long categoryId,
             @RequestParam("file") MultipartFile file) throws Exception {
 
-        Receipt receipt = receiptService.processReceiptAndSave(userId, categoryId, file);
+        Receipt receipt = receiptService.processReceiptAndSave(userId, file);
         return ResponseEntity.ok(receipt);
     }
 
