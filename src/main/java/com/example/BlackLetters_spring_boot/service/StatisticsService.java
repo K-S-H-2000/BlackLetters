@@ -1,7 +1,9 @@
 package com.example.BlackLetters_spring_boot.service;
 
 import com.example.BlackLetters_spring_boot.domain.Budget;
+import com.example.BlackLetters_spring_boot.domain.MonthlySummary;
 import com.example.BlackLetters_spring_boot.persistence.BudgetRepository;
+import com.example.BlackLetters_spring_boot.persistence.MonthlySummaryRepository;
 import com.example.BlackLetters_spring_boot.persistence.ReceiptRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -20,22 +22,22 @@ public class StatisticsService {
 
     private final ReceiptRepository receiptRepository;
     private final BudgetRepository budgetRepository;
+    private final MonthlySummaryRepository monthlySummaryRepository;
 
-    // 월별 카테고리별 지출 통계
+    // 월별 카테고리별 지출 통계 (monthly_summary 조회)
     @Transactional(readOnly = true)
     public Map<String, Object> getMonthlyCategoryStats(Long userId, String yearMonth) {
-        LocalDateTime startDate = LocalDate.parse(yearMonth + "-01").atStartOfDay();
-        LocalDateTime endDate = startDate.plusMonths(1);
+        LocalDate budgetMonth = LocalDate.parse(yearMonth + "-01");
 
-        List<Object[]> rows = receiptRepository.findMonthlySpendingByCategory(userId, startDate, endDate);
-        Long totalSpending = receiptRepository.findMonthlyTotalSpending(userId, startDate, endDate);
+        List<MonthlySummary> summaries = monthlySummaryRepository.findByUserUserIdAndBudgetMonth(userId, budgetMonth);
+        Long totalSpending = monthlySummaryRepository.findTotalSpentByUserIdAndBudgetMonth(userId, budgetMonth);
 
         List<Map<String, Object>> categories = new ArrayList<>();
-        for (Object[] row : rows) {
+        for (MonthlySummary summary : summaries) {
             Map<String, Object> item = new HashMap<>();
-            item.put("categoryId", row[0]);
-            item.put("categoryName", row[1]);
-            item.put("totalSpent", row[2]);
+            item.put("categoryId", summary.getCategory().getCategoryId());
+            item.put("categoryName", summary.getCategory().getName());
+            item.put("totalSpent", summary.getTotalSpent());
             categories.add(item);
         }
 
@@ -46,21 +48,17 @@ public class StatisticsService {
         return result;
     }
 
-    // 예산 대비 사용률
+    // 예산 대비 사용률 (monthly_summary의 usage_rate 활용)
     @Transactional(readOnly = true)
     public Map<String, Object> getBudgetUsageStats(Long userId, String yearMonth) {
         LocalDate budgetMonth = LocalDate.parse(yearMonth + "-01");
-        LocalDateTime startDate = budgetMonth.atStartOfDay();
-        LocalDateTime endDate = startDate.plusMonths(1);
 
-        // 해당 월 예산 목록
         List<Budget> budgets = budgetRepository.findByUserUserIdAndBudgetMonth(userId, budgetMonth);
+        List<MonthlySummary> summaries = monthlySummaryRepository.findByUserUserIdAndBudgetMonth(userId, budgetMonth);
 
-        // 카테고리별 실제 지출
-        List<Object[]> spendingRows = receiptRepository.findMonthlySpendingByCategory(userId, startDate, endDate);
-        Map<Long, Integer> spendingMap = new HashMap<>();
-        for (Object[] row : spendingRows) {
-            spendingMap.put((Long) row[0], ((Number) row[2]).intValue());
+        Map<Long, MonthlySummary> summaryMap = new HashMap<>();
+        for (MonthlySummary summary : summaries) {
+            summaryMap.put(summary.getCategory().getCategoryId(), summary);
         }
 
         List<Map<String, Object>> budgetUsages = new ArrayList<>();
@@ -70,8 +68,12 @@ public class StatisticsService {
         for (Budget budget : budgets) {
             Long categoryId = budget.getCategory().getCategoryId();
             int budgetAmount = budget.getAmount();
-            int spentAmount = spendingMap.getOrDefault(categoryId, 0);
-            double usageRate = budgetAmount > 0 ? (double) spentAmount / budgetAmount * 100 : 0;
+
+            MonthlySummary summary = summaryMap.get(categoryId);
+            int spentAmount = summary != null ? summary.getTotalSpent().intValue() : 0;
+            double usageRate = summary != null && summary.getUsageRate() != null
+                    ? summary.getUsageRate().doubleValue()
+                    : (budgetAmount > 0 ? (double) spentAmount / budgetAmount * 100 : 0);
 
             Map<String, Object> item = new HashMap<>();
             item.put("categoryId", categoryId);
@@ -79,7 +81,7 @@ public class StatisticsService {
             item.put("budgetAmount", budgetAmount);
             item.put("spentAmount", spentAmount);
             item.put("remainingAmount", budgetAmount - spentAmount);
-            item.put("usageRate", Math.round(usageRate * 10) / 10.0); // 소수점 1자리
+            item.put("usageRate", Math.round(usageRate * 10) / 10.0);
 
             budgetUsages.add(item);
             totalBudget += budgetAmount;
