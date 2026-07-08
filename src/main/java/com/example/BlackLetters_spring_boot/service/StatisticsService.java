@@ -97,4 +97,27 @@ public class StatisticsService {
         result.put("categories", budgetUsages);
         return result;
     }
+
+    // 예산 80% 이상 사용자 조회 (알림 대상)
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> getBudgetAlerts(Long userId, String yearMonth) {
+        LocalDate budgetMonth = LocalDate.parse(yearMonth + "-01");
+
+        List<MonthlySummary> summaries = monthlySummaryRepository.findByUserUserIdAndBudgetMonth(userId, budgetMonth);
+
+        List<Map<String, Object>> alerts = new ArrayList<>();
+        for (MonthlySummary summary : summaries) {
+            if (summary.getUsageRate() != null && summary.getUsageRate().doubleValue() >= 80) {
+                Map<String, Object> alert = new HashMap<>();
+                alert.put("categoryId", summary.getCategory().getCategoryId());
+                alert.put("categoryName", summary.getCategory().getName());
+                alert.put("totalSpent", summary.getTotalSpent());
+                alert.put("usageRate", summary.getUsageRate());
+                String level = summary.getUsageRate().doubleValue() >= 100 ? "예산 초과" : "예산 80% 도달";
+                alert.put("alertLevel", level);
+                alerts.add(alert);
+            }
+        }
+        return alerts;
+    }
 }

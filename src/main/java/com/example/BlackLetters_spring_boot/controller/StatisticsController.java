@@ -32,4 +32,13 @@ public class StatisticsController {
             @RequestParam("yearMonth") String yearMonth) {
         return ResponseEntity.ok(statisticsService.getBudgetUsageStats(userId, yearMonth));
     }
+
+    // 예산 알림 대상 조회 (usage_rate >= 80%)
+    // GET /api/v1/statistics/alerts?yearMonth=2026-07
+    @GetMapping("/alerts")
+    public ResponseEntity<?> getBudgetAlerts(
+            @AuthenticationPrincipal Long userId,
+            @RequestParam("yearMonth") String yearMonth) {
+        return ResponseEntity.ok(statisticsService.getBudgetAlerts(userId, yearMonth));
+    }
 }
