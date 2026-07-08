@@ -34,12 +34,12 @@ spring:
 cloud:
   aws:
     credentials:
-      access-key: # TODO: AWS Access Key 입력
-      secret-key: # TODO: AWS Secret Key 입력
+      access-key: ${AWS_ACCESS_KEY_ID:}
+      secret-key: ${AWS_SECRET_ACCESS_KEY:}
     region:
-      static: ap-northeast-2 # 예: 서울 리전
+      static: ap-northeast-2
     s3:
-      bucket: # TODO: S3 버킷 이름 입력
+      bucket: ${AWS_S3_BUCKET:}
 
 jwt:
   secret: "BlackLettersSpringBootSecretKeyForLocalDevelopmentMakeItLongEnough1234567890" # JWT 서명용 비밀키 (256비트 이상 문자열)
