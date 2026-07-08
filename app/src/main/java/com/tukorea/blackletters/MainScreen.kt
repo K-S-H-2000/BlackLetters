@@ -1,6 +1,7 @@
 package com.tukorea.blackletters
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -55,19 +56,17 @@ data class UsageItem(
     val amount: Long
 )
 
-// 임시 토큰 (로그인 구현 전까지 사용)
-const val TEMP_TOKEN = "Bearer YOUR_TOKEN_HERE"
-
 @Composable
-fun MainScreen() {
+fun MainScreen(token: String) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val api = remember { BlackLettersApi.create() }
+    val bearerToken = "Bearer $token"
 
     var sampleData by remember { mutableStateOf<List<MonthlyBalance>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
 
-    // 데이터 로드 (최근 12개월 통계 가져오기 시도)
+    // 데이터 로드
     LaunchedEffect(Unit) {
         isLoading = true
         try {
@@ -80,7 +79,7 @@ fun MainScreen() {
                 val yearMonth = String.format(Locale.US, "%d-%02d", year, month)
                 
                 try {
-                    val stats = api.getBudgetStatistics(TEMP_TOKEN, yearMonth)
+                    val stats = api.getBudgetStatistics(bearerToken, yearMonth)
                     data.add(0, MonthlyBalance(
                         month = "${month}월",
                         amount = stats.totalRemaining,
@@ -128,7 +127,7 @@ fun MainScreen() {
         if (success) {
             capturedImageUri = tempPhotoUri
             tempPhotoUri?.let { uri ->
-                uploadReceipt(context, api, scope, uri)
+                uploadReceipt(context, api, bearerToken, scope, uri)
             }
         }
     }
@@ -138,7 +137,7 @@ fun MainScreen() {
     ) { uri: Uri? ->
         uri?.let {
             capturedImageUri = it
-            uploadReceipt(context, api, scope, it)
+            uploadReceipt(context, api, bearerToken, scope, it)
         }
     }
 
@@ -167,6 +166,7 @@ fun MainScreen() {
         if (isDetail) {
             UsageDetailScreen(
                 api = api,
+                token = bearerToken,
                 selectedMonth = selectedMonth ?: MonthlyBalance("", 0, ""),
                 onBack = { showUsageDetail = false },
                 onUploadClick = { handleUploadClick() }
@@ -213,24 +213,50 @@ fun MainScreen() {
     }
 }
 
-fun uploadReceipt(context: android.content.Context, api: BlackLettersApi, scope: kotlinx.coroutines.CoroutineScope, uri: Uri) {
+fun uploadReceipt(context: Context, api: BlackLettersApi, token: String, scope: kotlinx.coroutines.CoroutineScope, uri: Uri) {
     scope.launch {
         try {
-            // 이미지 압축 처리 (413 Payload Too Large 에러 방지)
-            val inputStream = context.contentResolver.openInputStream(uri)
-            val bitmap = BitmapFactory.decodeStream(inputStream)
-            inputStream?.close()
+            // 이미지 크기 및 압축 처리 최적화
+            val options = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            context.contentResolver.openInputStream(uri)?.use { 
+                BitmapFactory.decodeStream(it, null, options)
+            }
+
+            // 최대 해상도를 1024로 제한하여 리사이징 (파일 크기 대폭 감소)
+            var inSampleSize = 1
+            val maxDimension = 1024
+            if (options.outHeight > maxDimension || options.outWidth > maxDimension) {
+                val halfHeight = options.outHeight / 2
+                val halfWidth = options.outWidth / 2
+                while (halfHeight / inSampleSize >= maxDimension && halfWidth / inSampleSize >= maxDimension) {
+                    inSampleSize *= 2
+                }
+            }
+
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = inSampleSize
+            }
+            val bitmap = context.contentResolver.openInputStream(uri)?.use { 
+                BitmapFactory.decodeStream(it, null, decodeOptions)
+            }
+
+            if (bitmap == null) {
+                Toast.makeText(context, "이미지를 불러올 수 없습니다.", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
 
             val file = File(context.cacheDir, "upload_receipt.jpg")
             file.outputStream().use { output ->
-                // 화질을 70%로 압축하여 파일 크기를 대폭 줄임
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 70, output)
+                // 화질을 60%로 더 낮추고 리사이징된 비트맵을 저장
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 60, output)
             }
             
             val requestFile = file.asRequestBody("image/jpeg".toMediaTypeOrNull())
             val body = MultipartBody.Part.createFormData("file", file.name, requestFile)
             
-            api.uploadReceipt(TEMP_TOKEN, body)
+            api.uploadReceipt(token, body)
             Toast.makeText(context, "영수증이 업로드되었습니다.", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Toast.makeText(context, "업로드 실패: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -315,6 +341,7 @@ fun MainDashboard(
 @Composable
 fun UsageDetailScreen(
     api: BlackLettersApi,
+    token: String,
     selectedMonth: MonthlyBalance,
     onBack: () -> Unit,
     onUploadClick: () -> Unit
@@ -325,7 +352,7 @@ fun UsageDetailScreen(
     LaunchedEffect(selectedMonth) {
         isLoading = true
         try {
-            val receipts = api.getReceipts(TEMP_TOKEN)
+            val receipts = api.getReceipts(token)
             val year = selectedMonth.year.replace("년", "")
             val month = selectedMonth.month.replace("월", "").padStart(2, '0')
             val filtered = receipts.filter { 
@@ -524,6 +551,7 @@ fun BarItem(
                 .weight(1f),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // 상단: 흑자
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -543,6 +571,7 @@ fun BarItem(
                 }
             }
             
+            // 하단: 적자
             Box(
                 modifier = Modifier
                     .weight(1f)
