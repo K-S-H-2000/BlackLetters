@@ -105,6 +105,7 @@ src/main/java/com/example/BlackLetters_spring_boot/
 ### 5. 통계 (Statistics)
 * `GET /api/v1/statistics/monthly?yearMonth=YYYY-MM` : 월별 카테고리별 지출 통계 조회
 * `GET /api/v1/statistics/budget?yearMonth=YYYY-MM` : 카테고리 예산 대비 사용률 통계 조회
+* `GET /api/v1/statistics/alerts?yearMonth=YYYY-MM` : 예산 사용률 80% 이상인 알림 대상 조회
 
 ---
 
