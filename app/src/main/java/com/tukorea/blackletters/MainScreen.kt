@@ -2,6 +2,8 @@ package com.tukorea.blackletters
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Environment
 import android.widget.Toast
@@ -30,6 +32,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import com.tukorea.blackletters.network.BlackLettersApi
+import com.tukorea.blackletters.network.Receipt
+import kotlinx.coroutines.launch
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
 import java.text.DecimalFormat
 import java.text.SimpleDateFormat
@@ -47,27 +55,63 @@ data class UsageItem(
     val amount: Long
 )
 
+// 임시 토큰 (로그인 구현 전까지 사용)
+const val TEMP_TOKEN = "Bearer YOUR_TOKEN_HERE"
+
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
-    val sampleData = remember {
-        val data = mutableListOf<MonthlyBalance>()
-        for (m in 7..12) {
-            data.add(MonthlyBalance("${m}월", ((-800000..800000).random()).toLong(), "2025년"))
+    val scope = rememberCoroutineScope()
+    val api = remember { BlackLettersApi.create() }
+
+    var sampleData by remember { mutableStateOf<List<MonthlyBalance>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    // 데이터 로드 (최근 12개월 통계 가져오기 시도)
+    LaunchedEffect(Unit) {
+        isLoading = true
+        try {
+            val data = mutableListOf<MonthlyBalance>()
+            val calendar = Calendar.getInstance()
+            
+            for (i in 0 until 12) {
+                val year = calendar.get(Calendar.YEAR)
+                val month = calendar.get(Calendar.MONTH) + 1
+                val yearMonth = String.format(Locale.US, "%d-%02d", year, month)
+                
+                try {
+                    val stats = api.getBudgetStatistics(TEMP_TOKEN, yearMonth)
+                    data.add(0, MonthlyBalance(
+                        month = "${month}월",
+                        amount = stats.totalRemaining,
+                        year = "${year}년"
+                    ))
+                } catch (e: Exception) {
+                    data.add(0, MonthlyBalance("${month}월", 0, "${year}년"))
+                }
+                calendar.add(Calendar.MONTH, -1)
+            }
+            sampleData = data
+        } catch (e: Exception) {
+            Toast.makeText(context, "데이터를 불러오는데 실패했습니다.", Toast.LENGTH_SHORT).show()
+        } finally {
+            isLoading = false
         }
-        for (m in 1..6) {
-            data.add(MonthlyBalance("${m}월", ((-800000..800000).random()).toLong(), "2026년"))
-        }
-        data
     }
 
-    var selectedMonth by remember { mutableStateOf(sampleData.last()) }
+    var selectedMonth by remember { mutableStateOf<MonthlyBalance?>(null) }
+    
+    LaunchedEffect(sampleData) {
+        if (sampleData.isNotEmpty() && selectedMonth == null) {
+            selectedMonth = sampleData.last()
+        }
+    }
+
     var showImageSourceDialog by remember { mutableStateOf(false) }
     var showUsageDetail by remember { mutableStateOf(false) }
     var capturedImageUri by remember { mutableStateOf<Uri?>(null) }
     var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
 
-    // 권한 요청 런처
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
@@ -78,23 +122,23 @@ fun MainScreen() {
         }
     }
 
-    // 카메라 런처
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
         if (success) {
             capturedImageUri = tempPhotoUri
-            Toast.makeText(context, "영수증이 업로드되었습니다.", Toast.LENGTH_SHORT).show()
+            tempPhotoUri?.let { uri ->
+                uploadReceipt(context, api, scope, uri)
+            }
         }
     }
 
-    // 갤러리 런처
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let {
             capturedImageUri = it
-            Toast.makeText(context, "갤러리에서 사진을 가져왔습니다.", Toast.LENGTH_SHORT).show()
+            uploadReceipt(context, api, scope, it)
         }
     }
 
@@ -113,7 +157,6 @@ fun MainScreen() {
         }
     }
 
-    // 뒤로가기 버튼 처리
     if (showUsageDetail) {
         BackHandler {
             showUsageDetail = false
@@ -123,21 +166,21 @@ fun MainScreen() {
     Crossfade(targetState = showUsageDetail, label = "ScreenTransition") { isDetail ->
         if (isDetail) {
             UsageDetailScreen(
-                selectedMonth = selectedMonth,
+                api = api,
+                selectedMonth = selectedMonth ?: MonthlyBalance("", 0, ""),
                 onBack = { showUsageDetail = false },
                 onUploadClick = { handleUploadClick() }
             )
         } else {
             MainDashboard(
                 sampleData = sampleData,
-                selectedMonth = selectedMonth,
+                selectedMonth = selectedMonth ?: MonthlyBalance("", 0, ""),
                 onMonthSelected = { selectedMonth = it },
                 onUsageClick = { showUsageDetail = true }
             )
         }
     }
 
-    // 사진 소스 선택 다이얼로그 (공통 사용)
     if (showImageSourceDialog) {
         AlertDialog(
             onDismissRequest = { showImageSourceDialog = false },
@@ -167,6 +210,31 @@ fun MainScreen() {
                 }
             }
         )
+    }
+}
+
+fun uploadReceipt(context: android.content.Context, api: BlackLettersApi, scope: kotlinx.coroutines.CoroutineScope, uri: Uri) {
+    scope.launch {
+        try {
+            // 이미지 압축 처리 (413 Payload Too Large 에러 방지)
+            val inputStream = context.contentResolver.openInputStream(uri)
+            val bitmap = BitmapFactory.decodeStream(inputStream)
+            inputStream?.close()
+
+            val file = File(context.cacheDir, "upload_receipt.jpg")
+            file.outputStream().use { output ->
+                // 화질을 70%로 압축하여 파일 크기를 대폭 줄임
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 70, output)
+            }
+            
+            val requestFile = file.asRequestBody("image/jpeg".toMediaTypeOrNull())
+            val body = MultipartBody.Part.createFormData("file", file.name, requestFile)
+            
+            api.uploadReceipt(TEMP_TOKEN, body)
+            Toast.makeText(context, "영수증이 업로드되었습니다.", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(context, "업로드 실패: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
     }
 }
 
@@ -219,37 +287,24 @@ fun MainDashboard(
                 )
             }
 
-            items(10) { index ->
-                if (index == 0) {
-                    Card(
+            items(1) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onUsageClick() },
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))
+                ) {
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onUsageClick() },
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "사용 내역",
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                } else {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(80.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))
-                    ) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("상세 항목 리스트 $index")
-                        }
+                        Text(
+                            text = "사용 내역",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -259,23 +314,38 @@ fun MainDashboard(
 
 @Composable
 fun UsageDetailScreen(
+    api: BlackLettersApi,
     selectedMonth: MonthlyBalance,
     onBack: () -> Unit,
     onUploadClick: () -> Unit
 ) {
-    // 더미데이터 생성 코드
-    val usageItems = remember(selectedMonth) {
-        List(12) { i ->
-            UsageItem(
-                date = "${selectedMonth.month} ${i + 1}일",
-                title = "테스트 소비 항목 ${i + 1}",
-                amount = (5000..50000).random().toLong()
-            )
+    var usageItems by remember { mutableStateOf<List<UsageItem>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(selectedMonth) {
+        isLoading = true
+        try {
+            val receipts = api.getReceipts(TEMP_TOKEN)
+            val year = selectedMonth.year.replace("년", "")
+            val month = selectedMonth.month.replace("월", "").padStart(2, '0')
+            val filtered = receipts.filter { 
+                it.transactionDate?.contains("$year-$month") == true
+            }.map {
+                UsageItem(
+                    date = it.transactionDate?.substring(5, 10) ?: "",
+                    title = it.merchantName ?: "알 수 없음",
+                    amount = it.totalAmount
+                )
+            }
+            usageItems = filtered
+        } catch (e: Exception) {
+            // 에러 처리
+        } finally {
+            isLoading = false
         }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
-        // 상단 바
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -292,28 +362,34 @@ fun UsageDetailScreen(
             )
         }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 40.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(usageItems) { item ->
-                UsageItemRow(item)
+        if (isLoading) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
             }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 40.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(usageItems) { item ->
+                    UsageItemRow(item)
+                }
 
-            item {
-                Spacer(modifier = Modifier.height(24.dp))
-                Button(
-                    onClick = onUploadClick,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Black),
-                    shape = MaterialTheme.shapes.medium
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("영수증 업로드", fontSize = 16.sp)
+                item {
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(
+                        onClick = onUploadClick,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Black),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("영수증 업로드", fontSize = 16.sp)
+                    }
                 }
             }
         }
