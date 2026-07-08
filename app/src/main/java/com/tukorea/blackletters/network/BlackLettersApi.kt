@@ -91,6 +91,28 @@ data class AuthResponse(
     val token: String
 )
 
+data class CreateCategoryRequest(
+    val name: String
+)
+
+data class UpdateCategoryRequest(
+    val name: String
+)
+
+data class Budget(
+    val budgetId: Long,
+    val amount: Long,
+    val budgetMonth: String,
+    val category: Category,
+    val createdAt: String
+)
+
+data class SetBudgetRequest(
+    val categoryId: Long,
+    val yearMonth: String,
+    val amount: Long
+)
+
 interface BlackLettersApi {
     @POST("/api/v1/auth/kakao")
     suspend fun loginWithKakao(@Body request: KakaoLoginRequest): AuthResponse
@@ -122,6 +144,42 @@ interface BlackLettersApi {
         @Header("Authorization") token: String,
         @Query("yearMonth") yearMonth: String
     ): BudgetStatistics
+
+    // 카테고리 API
+    @GET("/api/v1/categories")
+    suspend fun getCategories(@Header("Authorization") token: String): List<Category>
+
+    @POST("/api/v1/categories")
+    suspend fun createCategory(
+        @Header("Authorization") token: String,
+        @Body request: CreateCategoryRequest
+    ): Category
+
+    @PATCH("/api/v1/categories/{categoryId}")
+    suspend fun updateCategory(
+        @Header("Authorization") token: String,
+        @Path("categoryId") categoryId: Long,
+        @Body request: UpdateCategoryRequest
+    ): Category
+
+    @DELETE("/api/v1/categories/{categoryId}")
+    suspend fun deleteCategory(
+        @Header("Authorization") token: String,
+        @Path("categoryId") categoryId: Long
+    ): retrofit2.Response<Unit>
+
+    // 예산 API
+    @GET("/api/v1/budgets")
+    suspend fun getBudgets(
+        @Header("Authorization") token: String,
+        @Query("yearMonth") yearMonth: String
+    ): List<Budget>
+
+    @POST("/api/v1/budgets")
+    suspend fun setBudget(
+        @Header("Authorization") token: String,
+        @Body request: SetBudgetRequest
+    ): Budget
 
     companion object {
         private const val BASE_URL = "http://43.202.24.80:8080"
