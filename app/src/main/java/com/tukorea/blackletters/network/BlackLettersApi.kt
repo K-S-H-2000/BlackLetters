@@ -6,6 +6,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.*
+import java.util.concurrent.TimeUnit
 
 data class User(
     val userId: Long,
@@ -17,7 +18,8 @@ data class User(
 data class Category(
     val categoryId: Long,
     val name: String,
-    val active: Boolean? = null
+    val active: Boolean? = null,
+    val user: User? = null
 )
 
 data class Receipt(
@@ -113,6 +115,21 @@ data class SetBudgetRequest(
     val amount: Long
 )
 
+data class UpdateReceiptRequest(
+    val merchantName: String? = null,
+    val totalAmount: Long? = null,
+    val transactionDate: String? = null,
+    val categoryId: Long? = null,
+    val items: List<UpdateReceiptItem>? = null
+)
+
+data class UpdateReceiptItem(
+    val itemName: String,
+    val unitPrice: Long?,
+    val quantity: Int,
+    val amount: Long
+)
+
 interface BlackLettersApi {
     @POST("/api/v1/auth/kakao")
     suspend fun loginWithKakao(@Body request: KakaoLoginRequest): AuthResponse
@@ -132,6 +149,19 @@ interface BlackLettersApi {
         @Header("Authorization") token: String,
         @Part file: MultipartBody.Part
     ): Receipt
+
+    @PATCH("/api/v1/receipts/{receiptId}")
+    suspend fun updateReceipt(
+        @Header("Authorization") token: String,
+        @Path("receiptId") receiptId: Long,
+        @Body request: UpdateReceiptRequest
+    ): ReceiptDetail
+
+    @DELETE("/api/v1/receipts/{receiptId}")
+    suspend fun deleteReceipt(
+        @Header("Authorization") token: String,
+        @Path("receiptId") receiptId: Long
+    ): retrofit2.Response<Unit>
 
     @GET("/api/v1/statistics/monthly")
     suspend fun getMonthlyStatistics(
@@ -189,6 +219,9 @@ interface BlackLettersApi {
 
             val client = OkHttpClient.Builder()
                 .addInterceptor(logger)
+                .connectTimeout(60, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
                 .build()
 
             return Retrofit.Builder()

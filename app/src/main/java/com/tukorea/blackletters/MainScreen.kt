@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -38,6 +39,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.tukorea.blackletters.network.*
@@ -58,10 +60,39 @@ data class MonthlyBalance(
 )
 
 data class UsageItem(
+    val id: Long,
     val date: String,
     val title: String,
     val amount: Long
 )
+
+// 유틸리티 함수들을 최상단으로 이동 (MainScreen 내부에서 호출 가능하게 함)
+fun createImageFile(context: Context): File {
+    val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+    val storageDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+    return File.createTempFile("JPEG_${timeStamp}_", ".jpg", storageDir)
+}
+
+fun uploadReceipt(context: Context, api: BlackLettersApi, token: String, scope: kotlinx.coroutines.CoroutineScope, uri: Uri, onSuccess: () -> Unit) {
+    scope.launch {
+        try {
+            // 원본 파일 전송을 위해 캐시 폴더에 복사
+            val file = File(context.cacheDir, "upload_receipt.jpg")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                file.outputStream().use { output -> input.copyTo(output) }
+            }
+            
+            val requestFile = file.asRequestBody("image/jpeg".toMediaTypeOrNull())
+            val body = MultipartBody.Part.createFormData("file", file.name, requestFile)
+            
+            api.uploadReceipt(token, body)
+            Toast.makeText(context, "영수증이 업로드되었습니다.", Toast.LENGTH_SHORT).show()
+            onSuccess()
+        } catch (e: Exception) {
+            Toast.makeText(context, "업로드 실패: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
 
 @Composable
 fun MainScreen(token: String) {
@@ -73,9 +104,11 @@ fun MainScreen(token: String) {
     var sampleData by remember { mutableStateOf<List<MonthlyBalance>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var totalBudgetInfo by remember { mutableStateOf<BudgetStatistics?>(null) }
+    var actualMonthlySpent by remember { mutableStateOf(0L) }
+    var selectedMonth by remember { mutableStateOf<MonthlyBalance?>(null) }
 
-    // 데이터 로드 (최근 12개월의 기본 데이터만 먼저 로드)
-    val loadInitialData = suspend {
+    // 데이터 로드 함수
+    val loadDashboardData = suspend {
         isLoading = true
         try {
             val data = mutableListOf<MonthlyBalance>()
@@ -88,18 +121,43 @@ fun MainScreen(token: String) {
                 
                 try {
                     val stats = api.getBudgetStatistics(bearerToken, yearMonth)
+                    // 앱에서 직접 지출액 합산 (정확도 확보)
+                    val sumSpent = stats.categories.sumOf { it.spentAmount }
+                    val calculatedRemaining = stats.totalBudget - sumSpent
                     data.add(0, MonthlyBalance(
                         month = "${month}월",
-                        amount = stats.totalRemaining,
+                        amount = calculatedRemaining,
                         year = "${year}년",
                         rawYearMonth = yearMonth
                     ))
                 } catch (e: Exception) {
-                    data.add(0, MonthlyBalance("${month}월", 0, "${year}년", yearMonth))
+                    try {
+                        val mStats = api.getMonthlyStatistics(bearerToken, yearMonth)
+                        val sumSpent = mStats.categories.sumOf { it.totalSpent }
+                        data.add(0, MonthlyBalance("${month}월", -sumSpent, "${year}년", yearMonth))
+                    } catch (e2: Exception) {
+                        data.add(0, MonthlyBalance("${month}월", 0, "${year}년", yearMonth))
+                    }
                 }
                 calendar.add(Calendar.MONTH, -1)
             }
             sampleData = data
+            
+            val monthToRefresh = selectedMonth ?: data.lastOrNull()
+            if (monthToRefresh != null) {
+                try {
+                    val stats = api.getBudgetStatistics(bearerToken, monthToRefresh.rawYearMonth)
+                    totalBudgetInfo = stats
+                    actualMonthlySpent = stats.categories.sumOf { it.spentAmount }
+                } catch (e: Exception) {
+                    totalBudgetInfo = null
+                    try {
+                        actualMonthlySpent = api.getMonthlyStatistics(bearerToken, monthToRefresh.rawYearMonth).categories.sumOf { it.totalSpent }
+                    } catch (e2: Exception) {
+                        actualMonthlySpent = 0L
+                    }
+                }
+            }
         } catch (e: Exception) {
             Toast.makeText(context, "데이터를 불러오는데 실패했습니다.", Toast.LENGTH_SHORT).show()
         } finally {
@@ -107,12 +165,8 @@ fun MainScreen(token: String) {
         }
     }
 
-    LaunchedEffect(Unit) {
-        loadInitialData()
-    }
+    LaunchedEffect(Unit) { loadDashboardData() }
 
-    var selectedMonth by remember { mutableStateOf<MonthlyBalance?>(null) }
-    
     // 초기 로드 시 마지막 달 선택
     LaunchedEffect(sampleData) {
         if (sampleData.isNotEmpty() && selectedMonth == null) {
@@ -120,52 +174,48 @@ fun MainScreen(token: String) {
         }
     }
 
-    // 선택된 월이 바뀔 때마다 상세 예산 정보 갱신
+    // 선택된 월이 바뀔 때마다 상세 정보 갱신
     LaunchedEffect(selectedMonth) {
         selectedMonth?.let { month ->
             try {
-                totalBudgetInfo = api.getBudgetStatistics(bearerToken, month.rawYearMonth)
+                val stats = api.getBudgetStatistics(bearerToken, month.rawYearMonth)
+                totalBudgetInfo = stats
+                actualMonthlySpent = stats.categories.sumOf { it.spentAmount }
             } catch (e: Exception) {
                 totalBudgetInfo = null
-            }
-        }
-    }
-
-    var showImageSourceDialog by remember { mutableStateOf(false) }
-    var currentScreen by remember { mutableStateOf("dashboard") } // dashboard, usage, category, budget
-    var capturedImageUri by remember { mutableStateOf<Uri?>(null) }
-    var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            showImageSourceDialog = true
-        } else {
-            Toast.makeText(context, "카메라 권한이 필요합니다.", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
-    ) { success ->
-        if (success) {
-            capturedImageUri = tempPhotoUri
-            tempPhotoUri?.let { uri ->
-                uploadReceipt(context, api, bearerToken, scope, uri) {
-                    scope.launch { loadInitialData() }
+                try {
+                    actualMonthlySpent = api.getMonthlyStatistics(bearerToken, month.rawYearMonth).categories.sumOf { it.totalSpent }
+                } catch (e2: Exception) {
+                    actualMonthlySpent = 0L
                 }
             }
         }
     }
 
-    val galleryLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
+    var showImageSourceDialog by remember { mutableStateOf(false) }
+    var currentScreen by remember { mutableStateOf("dashboard") }
+    var selectedReceiptId by remember { mutableStateOf<Long?>(null) }
+    var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+        if (isGranted) showImageSourceDialog = true
+        else Toast.makeText(context, "카메라 권한이 필요합니다.", Toast.LENGTH_SHORT).show()
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        if (success) {
+            tempPhotoUri?.let { uri ->
+                uploadReceipt(context, api, bearerToken, scope, uri) {
+                    scope.launch { loadDashboardData() }
+                }
+            }
+        }
+    }
+
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
-            capturedImageUri = it
             uploadReceipt(context, api, bearerToken, scope, it) {
-                scope.launch { loadInitialData() }
+                scope.launch { loadDashboardData() }
             }
         }
     }
@@ -180,7 +230,8 @@ fun MainScreen(token: String) {
     }
 
     BackHandler(enabled = currentScreen != "dashboard") {
-        currentScreen = "dashboard"
+        if (currentScreen == "receipt_detail") currentScreen = "usage"
+        else currentScreen = "dashboard"
     }
 
     val currentSelectedMonth = selectedMonth ?: MonthlyBalance("", 0, "", "")
@@ -192,7 +243,24 @@ fun MainScreen(token: String) {
                 token = bearerToken,
                 selectedMonth = currentSelectedMonth,
                 onBack = { currentScreen = "dashboard" },
-                onUploadClick = { handleUploadClick() }
+                onUploadClick = { handleUploadClick() },
+                onReceiptClick = { id -> 
+                    selectedReceiptId = id
+                    currentScreen = "receipt_detail"
+                }
+            )
+            "receipt_detail" -> ReceiptDetailScreen(
+                api = api,
+                token = bearerToken,
+                receiptId = selectedReceiptId!!,
+                onBack = { currentScreen = "usage" },
+                onDelete = {
+                    currentScreen = "usage"
+                    scope.launch { loadDashboardData() }
+                },
+                onUpdate = {
+                    scope.launch { loadDashboardData() }
+                }
             )
             "category" -> CategoryCustomScreen(
                 api = api,
@@ -203,15 +271,17 @@ fun MainScreen(token: String) {
                 api = api,
                 token = bearerToken,
                 selectedMonth = currentSelectedMonth,
+                budgetInfo = totalBudgetInfo,
                 onBack = { 
                     currentScreen = "dashboard"
-                    scope.launch { loadInitialData() }
+                    scope.launch { loadDashboardData() }
                 }
             )
             else -> MainDashboard(
                 sampleData = sampleData,
                 selectedMonth = currentSelectedMonth,
                 budgetInfo = totalBudgetInfo,
+                actualSpent = actualMonthlySpent,
                 onMonthSelected = { selectedMonth = it },
                 onUsageClick = { currentScreen = "usage" },
                 onBudgetClick = { currentScreen = "budget" },
@@ -229,67 +299,18 @@ fun MainScreen(token: String) {
                 TextButton(onClick = {
                     showImageSourceDialog = false
                     val photoFile = createImageFile(context)
-                    val photoUri = FileProvider.getUriForFile(
-                        context,
-                        "${context.packageName}.fileprovider",
-                        photoFile
-                    )
+                    val photoUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
                     tempPhotoUri = photoUri
                     cameraLauncher.launch(photoUri)
-                }) {
-                    Text("카메라")
-                }
+                }) { Text("카메라") }
             },
             dismissButton = {
                 TextButton(onClick = {
                     showImageSourceDialog = false
                     galleryLauncher.launch("image/*")
-                }) {
-                    Text("앨범")
-                }
+                }) { Text("앨범") }
             }
         )
-    }
-}
-
-fun createImageFile(context: Context): File {
-    val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-    val storageDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
-    return File.createTempFile("JPEG_${timeStamp}_", ".jpg", storageDir)
-}
-
-fun uploadReceipt(context: Context, api: BlackLettersApi, token: String, scope: kotlinx.coroutines.CoroutineScope, uri: Uri, onSuccess: () -> Unit) {
-    scope.launch {
-        try {
-            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
-
-            var inSampleSize = 1
-            val maxDimension = 1024
-            if (options.outHeight > maxDimension || options.outWidth > maxDimension) {
-                val halfHeight = options.outHeight / 2
-                val halfWidth = options.outWidth / 2
-                while (halfHeight / inSampleSize >= maxDimension && halfWidth / inSampleSize >= maxDimension) {
-                    inSampleSize *= 2
-                }
-            }
-
-            val bitmap = context.contentResolver.openInputStream(uri)?.use { 
-                BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { this.inSampleSize = inSampleSize })
-            } ?: return@launch
-
-            val file = File(context.cacheDir, "upload_receipt.jpg")
-            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 60, it) }
-            
-            val requestFile = file.asRequestBody("image/jpeg".toMediaTypeOrNull())
-            val body = MultipartBody.Part.createFormData("file", file.name, requestFile)
-            
-            api.uploadReceipt(token, body)
-            Toast.makeText(context, "영수증이 업로드되었습니다.", Toast.LENGTH_SHORT).show()
-            onSuccess()
-        } catch (e: Exception) {
-            Toast.makeText(context, "업로드 실패: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
     }
 }
 
@@ -298,6 +319,7 @@ fun MainDashboard(
     sampleData: List<MonthlyBalance>,
     selectedMonth: MonthlyBalance,
     budgetInfo: BudgetStatistics?,
+    actualSpent: Long,
     onMonthSelected: (MonthlyBalance) -> Unit,
     onUsageClick: () -> Unit,
     onBudgetClick: () -> Unit,
@@ -306,17 +328,8 @@ fun MainDashboard(
     val formatter = DecimalFormat("#,###")
     
     Column(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(3f)
-                .background(Color(0xFFFAFAFA))
-        ) {
-            BalanceBarChart(
-                data = sampleData,
-                selectedMonth = selectedMonth,
-                onMonthSelected = onMonthSelected
-            )
+        Box(modifier = Modifier.fillMaxWidth().weight(3f).background(Color(0xFFFAFAFA))) {
+            BalanceBarChart(data = sampleData, selectedMonth = selectedMonth, onMonthSelected = onMonthSelected)
         }
 
         LazyColumn(
@@ -328,41 +341,26 @@ fun MainDashboard(
         ) {
             item {
                 val isProfit = selectedMonth.amount >= 0
-                val amountText = formatter.format(kotlin.math.abs(selectedMonth.amount))
-                
-                Text(
-                    text = if (isProfit) "${amountText}원 흑자" else "${amountText}원 적자",
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (isProfit) Color.Black else Color.Red
-                )
+                val amountText = formatter.format(Math.abs(selectedMonth.amount))
+                Text(text = if (isProfit) "${amountText}원 흑자" else "${amountText}원 적자", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = if (isProfit) Color.Black else Color.Red)
             }
-            
             item {
-                Text(
-                    text = "${selectedMonth.year} ${selectedMonth.month} 상세 내역",
-                    color = Color.Gray,
-                    fontSize = 16.sp
-                )
+                Text(text = "${selectedMonth.year} ${selectedMonth.month} 상세 내역", color = Color.Gray, fontSize = 16.sp)
             }
-
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth().clickable { onUsageClick() },
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))
-                ) {
-                    Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                Card(modifier = Modifier.fillMaxWidth().clickable { onUsageClick() }, colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text(text = "사용 내역", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text(text = "${formatter.format(actualSpent)}원", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Red)
                     }
                 }
             }
-
             item {
-                val budgetText = if (budgetInfo != null) "${formatter.format(budgetInfo.totalRemaining)}원" else "예산을 입력해주세요"
-                Card(
-                    modifier = Modifier.fillMaxWidth().clickable { onBudgetClick() },
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))
-                ) {
+                val budgetTotal = budgetInfo?.totalBudget ?: 0L
+                val budgetRemaining = if (budgetInfo != null) (budgetTotal - actualSpent) else (0L - actualSpent)
+                val budgetText = if (budgetInfo != null) "${formatter.format(budgetRemaining)}원" else "예산을 입력해주세요"
+                
+                Card(modifier = Modifier.fillMaxWidth().clickable { onBudgetClick() }, colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))) {
                     Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                         Text(text = "잔여 예산: $budgetText", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     }
@@ -370,19 +368,8 @@ fun MainDashboard(
             }
         }
 
-        // 맨 아래 "카테고리 커스텀" 버튼
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(24.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Button(
-                onClick = onCategoryClick,
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF9AA9C2)),
-                shape = MaterialTheme.shapes.medium
-            ) {
+        Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+            Button(onClick = onCategoryClick, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF9AA9C2)), shape = MaterialTheme.shapes.medium) {
                 Text("카테고리 커스텀", color = Color.Black, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
         }
@@ -390,67 +377,33 @@ fun MainDashboard(
 }
 
 @Composable
-fun UsageDetailScreen(
-    api: BlackLettersApi,
-    token: String,
-    selectedMonth: MonthlyBalance,
-    onBack: () -> Unit,
-    onUploadClick: () -> Unit
-) {
+fun UsageDetailScreen(api: BlackLettersApi, token: String, selectedMonth: MonthlyBalance, onBack: () -> Unit, onUploadClick: () -> Unit, onReceiptClick: (Long) -> Unit) {
     var usageItems by remember { mutableStateOf<List<UsageItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
-
     LaunchedEffect(selectedMonth) {
         isLoading = true
         try {
             val receipts = api.getReceipts(token)
             val year = selectedMonth.year.replace("년", "")
             val month = selectedMonth.month.replace("월", "").padStart(2, '0')
-            val filtered = receipts.filter { 
-                it.transactionDate?.contains("$year-$month") == true
-            }.map {
-                UsageItem(
-                    date = it.transactionDate?.substring(5, 10) ?: "",
-                    title = it.merchantName ?: "알 수 없음",
-                    amount = it.totalAmount
-                )
+            usageItems = receipts.filter { it.transactionDate?.contains("$year-$month") == true }.map {
+                UsageItem(id = it.receiptId, date = it.transactionDate?.substring(5, 10) ?: "", title = it.merchantName ?: "알 수 없음", amount = it.totalAmount)
             }
-            usageItems = filtered
-        } catch (e: Exception) {
-        } finally {
-            isLoading = false
-        }
+        } catch (e: Exception) {} finally { isLoading = false }
     }
-
     Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
             Text(text = "${selectedMonth.month} 사용 내역", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
-
-        if (isLoading) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 40.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(usageItems) { item -> UsageItemRow(item) }
+        if (isLoading) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        else {
+            LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(usageItems) { item -> Box(modifier = Modifier.clickable { onReceiptClick(item.id) }) { UsageItemRow(item) } }
                 item {
                     Spacer(modifier = Modifier.height(24.dp))
-                    Button(
-                        onClick = onUploadClick,
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.Black),
-                        shape = MaterialTheme.shapes.medium
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("영수증 업로드", fontSize = 16.sp)
+                    Button(onClick = onUploadClick, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Black), shape = MaterialTheme.shapes.medium) {
+                        Icon(Icons.Default.Add, contentDescription = null); Spacer(modifier = Modifier.width(8.dp)); Text("영수증 업로드", fontSize = 16.sp)
                     }
                 }
             }
@@ -461,16 +414,8 @@ fun UsageDetailScreen(
 @Composable
 fun UsageItemRow(item: UsageItem) {
     val formatter = DecimalFormat("#,###")
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F8F8)),
-        shape = MaterialTheme.shapes.small
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F8F8)), shape = MaterialTheme.shapes.small) {
+        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column {
                 Text(text = item.date, fontSize = 12.sp, color = Color.Gray)
                 Text(text = item.title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
@@ -481,70 +426,164 @@ fun UsageItemRow(item: UsageItem) {
 }
 
 @Composable
-fun CategoryCustomScreen(
-    api: BlackLettersApi,
-    token: String,
-    onBack: () -> Unit
-) {
+fun ReceiptDetailScreen(api: BlackLettersApi, token: String, receiptId: Long, onBack: () -> Unit, onDelete: () -> Unit, onUpdate: () -> Unit) {
+    var detail by remember { mutableStateOf<ReceiptDetail?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var showEditDialog by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val formatter = DecimalFormat("#,###")
+
+    LaunchedEffect(receiptId) {
+        isLoading = true
+        try { detail = api.getReceiptDetail(token, receiptId) } catch (e: Exception) {} finally { isLoading = false }
+    }
+
+    Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
+        Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                Text(text = "영수증 상세", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            }
+            Row {
+                IconButton(onClick = { showEditDialog = true }) { Icon(Icons.Default.Edit, contentDescription = "Edit") }
+                IconButton(onClick = { scope.launch { try { api.deleteReceipt(token, receiptId); onDelete() } catch (e: Exception) {} } }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
+            }
+        }
+        if (isLoading) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        else if (detail != null) {
+            LazyColumn(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(text = detail!!.merchantName ?: "알 수 없음", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                        detail!!.categoryName?.let { name ->
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Surface(color = Color(0xFF9AA9C2).copy(alpha = 0.2f), shape = MaterialTheme.shapes.small) {
+                                Text(text = name, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 12.sp, color = Color(0xFF4A5568))
+                            }
+                        }
+                    }
+                    Text(text = detail!!.transactionDate?.replace("T", " ") ?: "", color = Color.Gray)
+                }
+                item {
+                    HorizontalDivider()
+                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(text = "총 합계", fontSize = 18.sp, fontWeight = FontWeight.Bold); Text(text = "${formatter.format(detail!!.totalAmount)}원", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFFD32F2F))
+                    }
+                    HorizontalDivider()
+                }
+                detail!!.items?.let { items -> items(items) { item ->
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column { Text(text = item.itemName, fontSize = 16.sp); Text(text = "${formatter.format(item.unitPrice ?: 0)}원 x ${item.quantity}", fontSize = 12.sp, color = Color.Gray) }
+                        Text(text = "${formatter.format(item.amount)}원", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    }
+                } }
+            }
+        }
+    }
+    if (showEditDialog && detail != null) {
+        ReceiptEditDialog(api, token, detail!!, { showEditDialog = false }, {
+            showEditDialog = false
+            scope.launch { isLoading = true; detail = api.getReceiptDetail(token, receiptId); isLoading = false; onUpdate() }
+        })
+    }
+}
+
+@Composable
+fun ReceiptEditDialog(api: BlackLettersApi, token: String, initialDetail: ReceiptDetail, onDismiss: () -> Unit, onSave: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var merchantName by remember { mutableStateOf(initialDetail.merchantName ?: "") }
+    var transactionDate by remember { mutableStateOf(initialDetail.transactionDate ?: "") }
+    var selectedCategoryId by remember { mutableStateOf(initialDetail.categoryId) }
+    var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
+    val items = remember { mutableStateListOf<UpdateReceiptItem>().apply { initialDetail.items?.forEach { add(UpdateReceiptItem(it.itemName, it.unitPrice, it.quantity, it.amount)) } } }
+    val totalAmount = items.sumOf { it.amount }
+    
+    LaunchedEffect(Unit) { try { categories = api.getCategories(token).filter { it.active != false } } catch (e: Exception) {} }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.9f), shape = MaterialTheme.shapes.large, color = Color.White) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(text = "영수증 수정", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
+                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    item { OutlinedTextField(value = merchantName, onValueChange = { merchantName = it }, label = { Text("상호명") }, modifier = Modifier.fillMaxWidth()) }
+                    item { OutlinedTextField(value = transactionDate, onValueChange = { transactionDate = it }, label = { Text("일시 (YYYY-MM-DDTHH:mm:ss)") }, modifier = Modifier.fillMaxWidth()) }
+                    item {
+                        Text(text = "카테고리", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        LazyRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(categories) { category ->
+                                FilterChip(selected = selectedCategoryId == category.categoryId, onClick = { selectedCategoryId = category.categoryId }, label = { Text(category.name) })
+                            }
+                        }
+                    }
+                    item {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(text = "품목 내역", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            IconButton(onClick = { items.add(UpdateReceiptItem("", 0, 1, 0)) }) { Icon(Icons.Default.AddCircle, contentDescription = "Add Item") }
+                        }
+                    }
+                    itemsIndexed(items) { index, item ->
+                        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F8F8))) {
+                            Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    OutlinedTextField(value = item.itemName, onValueChange = { items[index] = item.copy(itemName = it) }, label = { Text("품목명") }, modifier = Modifier.weight(1f))
+                                    IconButton(onClick = { items.removeAt(index) }) { Text("-", color = Color.Red, fontSize = 24.sp, fontWeight = FontWeight.Bold) }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(value = item.unitPrice?.toString() ?: "", onValueChange = { val p = it.toLongOrNull() ?: 0L; items[index] = item.copy(unitPrice = p, amount = p * item.quantity) }, label = { Text("단가") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                                    OutlinedTextField(value = item.quantity.toString(), onValueChange = { val q = it.toIntOrNull() ?: 1; items[index] = item.copy(quantity = q, amount = (item.unitPrice ?: 0L) * q) }, label = { Text("수량") }, modifier = Modifier.weight(0.5f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                                }
+                                Text(text = "소계: ${DecimalFormat("#,###").format(item.amount)}원", textAlign = TextAlign.End, modifier = Modifier.fillMaxWidth(), fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text(text = "총 합계: ${DecimalFormat("#,###").format(totalAmount)}원", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+                Row(modifier = Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("취소") }
+                    Button(onClick = {
+                        scope.launch {
+                            try { api.updateReceipt(token, initialDetail.receiptId, UpdateReceiptRequest(merchantName, totalAmount, transactionDate, selectedCategoryId, items.toList())); onSave() }
+                            catch (e: Exception) { Toast.makeText(context, "수정 실패", Toast.LENGTH_SHORT).show() }
+                        }
+                    }) { Text("저장") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CategoryCustomScreen(api: BlackLettersApi, token: String, onBack: () -> Unit) {
     var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var showAddDialog by remember { mutableStateOf(false) }
-    var newCategoryName by remember { mutableStateOf("") }
+    var editingCategory by remember { mutableStateOf<Category?>(null) }
+    var categoryNameInput by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-
-    val loadCategories = suspend {
-        isLoading = true
-        try {
-            categories = api.getCategories(token).filter { it.active != false }
-        } catch (e: Exception) {
-        } finally {
-            isLoading = false
-        }
-    }
-
+    val loadCategories = suspend { isLoading = true; try { categories = api.getCategories(token).filter { it.active != false } } catch (e: Exception) {} finally { isLoading = false } }
     LaunchedEffect(Unit) { loadCategories() }
-
     Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
-                Text(text = "카테고리 편집", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            }
-            IconButton(onClick = { showAddDialog = true }) { Icon(Icons.Default.Add, contentDescription = "Add") }
+        Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }; Text(text = "카테고리 편집", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+            IconButton(onClick = { categoryNameInput = ""; showAddDialog = true }) { Icon(Icons.Default.Add, contentDescription = "Add") }
         }
-
-        if (isLoading) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+        if (isLoading) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        else {
+            LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(categories) { category ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F8F8))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(text = category.name, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                            IconButton(onClick = {
-                                scope.launch {
-                                    try {
-                                        api.deleteCategory(token, category.categoryId)
-                                        loadCategories()
-                                    } catch (e: Exception) {}
+                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F8F8))) {
+                        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Text(text = category.name, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                                if (category.user == null) { Spacer(modifier = Modifier.width(8.dp)); Surface(color = Color.LightGray.copy(alpha = 0.5f), shape = MaterialTheme.shapes.extraSmall) { Text(text = "기본", modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), fontSize = 10.sp, color = Color.Gray) } }
+                            }
+                            if (category.user != null) {
+                                Row {
+                                    IconButton(onClick = { categoryNameInput = category.name; editingCategory = category }) { Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color.Gray) }
+                                    IconButton(onClick = { scope.launch { try { api.deleteCategory(token, category.categoryId); loadCategories() } catch (e: Exception) {} } }) { Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Gray) }
                                 }
-                            }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Gray)
                             }
                         }
                     }
@@ -552,166 +591,49 @@ fun CategoryCustomScreen(
             }
         }
     }
-
-    if (showAddDialog) {
-        AlertDialog(
-            onDismissRequest = { showAddDialog = false },
-            title = { Text("카테고리 추가") },
-            text = {
-                OutlinedTextField(
-                    value = newCategoryName,
-                    onValueChange = { newCategoryName = it },
-                    label = { Text("이름") },
-                    singleLine = true
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (newCategoryName.isNotBlank()) {
-                        scope.launch {
-                            try {
-                                api.createCategory(token, CreateCategoryRequest(newCategoryName))
-                                newCategoryName = ""
-                                showAddDialog = false
-                                loadCategories()
-                            } catch (e: Exception) {}
-                        }
-                    }
-                }) { Text("추가") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddDialog = false }) { Text("취소") }
-            }
+    if (showAddDialog || editingCategory != null) {
+        AlertDialog(onDismissRequest = { showAddDialog = false; editingCategory = null }, title = { Text(if (showAddDialog) "카테고리 추가" else "카테고리 수정") }, text = { OutlinedTextField(value = categoryNameInput, onValueChange = { categoryNameInput = it }, label = { Text("이름") }, singleLine = true) },
+            confirmButton = { TextButton(onClick = { if (categoryNameInput.isNotBlank()) { scope.launch { try { if (showAddDialog) api.createCategory(token, CreateCategoryRequest(categoryNameInput)) else api.updateCategory(token, editingCategory!!.categoryId, UpdateCategoryRequest(categoryNameInput)); categoryNameInput = ""; showAddDialog = false; editingCategory = null; loadCategories() } catch (e: Exception) {} } } }) { Text(if (showAddDialog) "추가" else "수정") } },
+            dismissButton = { TextButton(onClick = { showAddDialog = false; editingCategory = null }) { Text("취소") } }
         )
     }
 }
 
 @Composable
-fun BudgetEntryScreen(
-    api: BlackLettersApi,
-    token: String,
-    selectedMonth: MonthlyBalance,
-    onBack: () -> Unit
-) {
+fun BudgetEntryScreen(api: BlackLettersApi, token: String, selectedMonth: MonthlyBalance, budgetInfo: BudgetStatistics?, onBack: () -> Unit) {
     var categories by remember { mutableStateOf<List<Category>>(emptyList()) }
     var budgets by remember { mutableStateOf<Map<Long, Long>>(emptyMap()) }
     var totalBudget by remember { mutableStateOf(0L) }
     var isLoading by remember { mutableStateOf(true) }
-    var editingCategoryId by remember { mutableStateOf<Long?>(null) } // -1 for total budget
+    var editingCategoryId by remember { mutableStateOf<Long?>(null) }
     var editingValue by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-
+    val formatter = DecimalFormat("#,###")
     LaunchedEffect(Unit) {
         isLoading = true
         try {
             categories = api.getCategories(token).filter { it.active != false }
             val existingBudgets = api.getBudgets(token, selectedMonth.rawYearMonth)
-            val budgetMap = existingBudgets.associate { it.category.categoryId to it.amount }
-            budgets = budgetMap
-            totalBudget = budgetMap.values.sum()
-        } catch (e: Exception) {
-        } finally {
-            isLoading = false
-        }
+            budgets = existingBudgets.associate { it.category.categoryId to it.amount }
+            totalBudget = budgets.values.sum()
+        } catch (e: Exception) {} finally { isLoading = false }
     }
-
     if (editingCategoryId != null) {
-        CustomKeypadScreen(
-            initialValue = editingValue,
-            onValueEntered = { newValue ->
-                val amount = newValue.toLongOrNull() ?: 0L
-                if (editingCategoryId == -1L) {
-                    totalBudget = amount
-                } else {
-                    val updatedBudgets = budgets.toMutableMap()
-                    updatedBudgets[editingCategoryId!!] = amount
-                    budgets = updatedBudgets
-                }
-                editingCategoryId = null
-            },
-            onCancel = { editingCategoryId = null }
-        )
+        CustomKeypadScreen(editingValue, { newValue -> val amount = newValue.toLongOrNull() ?: 0L; if (editingCategoryId == -1L) totalBudget = amount else { val updated = budgets.toMutableMap(); updated[editingCategoryId!!] = amount; budgets = updated }; editingCategoryId = null }, { editingCategoryId = null })
     } else {
         Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
-                Text(text = "${selectedMonth.month} 예산 설정", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            }
-
-            if (isLoading) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            } else {
-                val formatter = DecimalFormat("#,###")
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    item {
-                        Text(text = "총 예산", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                        Card(
-                            modifier = Modifier.fillMaxWidth().clickable { 
-                                editingCategoryId = -1L
-                                editingValue = totalBudget.toString()
-                            },
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))
-                        ) {
-                            Text(
-                                text = "${formatter.format(totalBudget)}원",
-                                modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                                textAlign = TextAlign.End,
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
+            Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }; Text(text = "${selectedMonth.month} 예산 설정", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+            if (isLoading) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            else {
+                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    item { Text(text = "총 예산", fontWeight = FontWeight.Bold, fontSize = 16.sp); Card(modifier = Modifier.fillMaxWidth().clickable { editingCategoryId = -1L; editingValue = totalBudget.toString() }, colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))) { Text(text = "${formatter.format(totalBudget)}원", modifier = Modifier.padding(16.dp).fillMaxWidth(), textAlign = TextAlign.End, fontSize = 20.sp, fontWeight = FontWeight.Bold) } }
                     item { HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp)) }
-
                     items(categories) { category ->
                         val amount = budgets[category.categoryId] ?: 0L
-                        Column {
-                            Text(text = category.name, fontSize = 14.sp, color = Color.Gray)
-                            Card(
-                                modifier = Modifier.fillMaxWidth().clickable { 
-                                    editingCategoryId = category.categoryId
-                                    editingValue = amount.toString()
-                                },
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F8F8))
-                            ) {
-                                Text(
-                                    text = "${formatter.format(amount)}원",
-                                    modifier = Modifier.padding(12.dp).fillMaxWidth(),
-                                    textAlign = TextAlign.End,
-                                    fontSize = 16.sp
-                                )
-                            }
-                        }
+                        val spent = budgetInfo?.categories?.find { it.categoryId == category.categoryId }?.spentAmount ?: 0L
+                        Column { Text(text = category.name, fontSize = 14.sp, color = Color.Gray); Card(modifier = Modifier.fillMaxWidth().clickable { editingCategoryId = category.categoryId; editingValue = amount.toString() }, colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F8F8))) { Column(modifier = Modifier.padding(12.dp).fillMaxWidth()) { Text(text = "${formatter.format(amount)}원", textAlign = TextAlign.End, fontSize = 16.sp, modifier = Modifier.fillMaxWidth()); Text(text = "사용액: ${formatter.format(spent)}원", textAlign = TextAlign.End, fontSize = 12.sp, color = Color.Red, modifier = Modifier.fillMaxWidth()) } } }
                     }
-
-                    item {
-                        Spacer(modifier = Modifier.height(24.dp))
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    try {
-                                        // 각 카테고리별 예산 저장 (API 명세에 맞춰 반복 호출)
-                                        budgets.forEach { (catId, amt) ->
-                                            api.setBudget(token, SetBudgetRequest(catId, selectedMonth.rawYearMonth, amt))
-                                        }
-                                        onBack()
-                                    } catch (e: Exception) {}
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().height(56.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color.Black)
-                        ) {
-                            Text("설정 완료")
-                        }
-                    }
+                    item { Spacer(modifier = Modifier.height(24.dp)); Button(onClick = { scope.launch { try { budgets.forEach { (catId, amt) -> api.setBudget(token, SetBudgetRequest(catId, selectedMonth.rawYearMonth, amt)) }; onBack() } catch (e: Exception) {} } }, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Black)) { Text("설정 완료") } }
                 }
             }
         }
@@ -719,212 +641,37 @@ fun BudgetEntryScreen(
 }
 
 @Composable
-fun CustomKeypadScreen(
-    initialValue: String,
-    onValueEntered: (String) -> Unit,
-    onCancel: () -> Unit
-) {
+fun CustomKeypadScreen(initialValue: String, onValueEntered: (String) -> Unit, onCancel: () -> Unit) {
     var currentValue by remember { mutableStateOf(if (initialValue == "0") "" else initialValue) }
     val formatter = DecimalFormat("#,###")
-
     Column(modifier = Modifier.fillMaxSize().background(Color.White).padding(24.dp)) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            IconButton(onClick = onCancel) { Icon(Icons.Default.Close, contentDescription = "Cancel") }
-            TextButton(onClick = { onValueEntered(if (currentValue.isEmpty()) "0" else currentValue) }) {
-                Text("입력", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Black)
-            }
-        }
-        
-        Box(
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = if (currentValue.isEmpty()) "0원" else "${formatter.format(currentValue.toLong())}원",
-                fontSize = 40.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { IconButton(onClick = onCancel) { Icon(Icons.Default.Close, contentDescription = "Cancel") }; TextButton(onClick = { onValueEntered(if (currentValue.isEmpty()) "0" else currentValue) }) { Text("입력", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Black) } }
+        Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { Text(text = if (currentValue.isEmpty()) "0원" else "${formatter.format(currentValue.toLong())}원", fontSize = 40.sp, fontWeight = FontWeight.Bold) }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { currentValue = ((currentValue.toLongOrNull() ?: 0L) + 1000).toString() },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray)
-                ) { Text("+1,000", color = Color.Black) }
-                Button(
-                    onClick = { currentValue = ((currentValue.toLongOrNull() ?: 0L) + 10000).toString() },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray)
-                ) { Text("+10,000", color = Color.Black) }
-            }
-
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = { currentValue = ((currentValue.toLongOrNull() ?: 0L) + 1000).toString() }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray)) { Text("+1,000", color = Color.Black) }; Button(onClick = { currentValue = ((currentValue.toLongOrNull() ?: 0L) + 10000).toString() }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray)) { Text("+10,000", color = Color.Black) } }
             val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "00", "0", "Del")
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                modifier = Modifier.height(300.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(keys) { key ->
-                    Button(
-                        onClick = {
-                            when (key) {
-                                "Del" -> if (currentValue.isNotEmpty()) currentValue = currentValue.dropLast(1)
-                                else -> currentValue += key
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize().height(60.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF0F0F0))
-                    ) {
-                        if (key == "Del") Text(text = "⌫", color = Color.Black, fontSize = 20.sp)
-                        else Text(text = key, color = Color.Black, fontSize = 20.sp)
-                    }
-                }
+            LazyVerticalGrid(columns = GridCells.Fixed(3), modifier = Modifier.height(300.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(keys) { key -> Button(onClick = { when (key) { "Del" -> if (currentValue.isNotEmpty()) currentValue = currentValue.dropLast(1) else -> currentValue += key } }, modifier = Modifier.fillMaxSize().height(60.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF0F0F0))) { if (key == "Del") Text(text = "⌫", color = Color.Black, fontSize = 20.sp) else Text(text = key, color = Color.Black, fontSize = 20.sp) } }
             }
         }
     }
 }
 
 @Composable
-fun BalanceBarChart(
-    data: List<MonthlyBalance>,
-    selectedMonth: MonthlyBalance,
-    onMonthSelected: (MonthlyBalance) -> Unit
-) {
-    val maxAbsValue = data.maxOfOrNull { kotlin.math.abs(it.amount) } ?: 1L
+fun BalanceBarChart(data: List<MonthlyBalance>, selectedMonth: MonthlyBalance, onMonthSelected: (MonthlyBalance) -> Unit) {
     val scrollState = rememberLazyListState()
-
-    LaunchedEffect(Unit) {
-        if (data.isNotEmpty()) {
-            scrollState.scrollToItem(data.size - 1)
-        }
-    }
-
+    LaunchedEffect(Unit) { if (data.isNotEmpty()) scrollState.scrollToItem(data.size - 1) }
     Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Spacer(modifier = Modifier.height(30.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                HorizontalDivider(
-                    modifier = Modifier.fillMaxWidth(),
-                    thickness = 1.dp,
-                    color = Color.LightGray.copy(alpha = 0.5f)
-                )
-            }
-        }
-
-        LazyRow(
-            state = scrollState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 40.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            items(data) { item ->
-                BarItem(
-                    item = item,
-                    isSelected = item.rawYearMonth == selectedMonth.rawYearMonth,
-                    maxAbsValue = maxAbsValue,
-                    onClick = { onMonthSelected(item) }
-                )
-            }
-        }
+        Column(modifier = Modifier.fillMaxSize()) { Spacer(modifier = Modifier.height(30.dp)); Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { HorizontalDivider(modifier = Modifier.fillMaxWidth(), thickness = 1.dp, color = Color.LightGray.copy(alpha = 0.5f)) } }
+        LazyRow(state = scrollState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 40.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) { items(data) { item -> BarItem(item = item, isSelected = item.rawYearMonth == selectedMonth.rawYearMonth, maxAbsValue = data.maxOfOrNull { Math.abs(it.amount) } ?: 1L, onClick = { onMonthSelected(item) }) } }
     }
 }
 
 @Composable
-fun BarItem(
-    item: MonthlyBalance,
-    isSelected: Boolean,
-    maxAbsValue: Long,
-    onClick: () -> Unit
-) {
-    val barHeightRatio = kotlin.math.abs(item.amount).toFloat() / maxAbsValue
-    
-    Column(
-        modifier = Modifier
-            .width(35.dp)
-            .fillMaxHeight()
-            .clickable { onClick() },
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Column(
-            modifier = Modifier
-                .height(30.dp)
-                .padding(top = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy((-2).dp)
-        ) {
-            if (isSelected) {
-                Text(
-                    text = item.year,
-                    fontSize = 10.sp,
-                    color = Color.Gray,
-                    lineHeight = 10.sp
-                )
-            } else {
-                Spacer(modifier = Modifier.height(10.dp))
-            }
-            Text(
-                text = item.month,
-                fontSize = 12.sp,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                color = if (isSelected) Color.Black else Color.Gray,
-                lineHeight = 14.sp
-            )
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // 상단: 흑자
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.BottomCenter
-            ) {
-                if (item.amount > 0) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(0.5f)
-                            .fillMaxHeight(barHeightRatio)
-                            .background(
-                                if (isSelected) Color.Black else Color.Black.copy(alpha = 0.3f),
-                                shape = MaterialTheme.shapes.extraSmall
-                            )
-                    )
-                }
-            }
-            
-            // 하단: 적자
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.TopCenter
-            ) {
-                if (item.amount < 0) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(0.5f)
-                            .fillMaxHeight(barHeightRatio)
-                            .background(
-                                if (isSelected) Color.Red else Color.Red.copy(alpha = 0.3f),
-                                shape = MaterialTheme.shapes.extraSmall
-                            )
-                    )
-                }
-            }
-        }
+fun BarItem(item: MonthlyBalance, isSelected: Boolean, maxAbsValue: Long, onClick: () -> Unit) {
+    val barHeightRatio = Math.abs(item.amount).toFloat() / maxAbsValue
+    Column(modifier = Modifier.width(35.dp).fillMaxHeight().clickable { onClick() }, horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(modifier = Modifier.height(30.dp).padding(top = 4.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy((-2).dp)) { if (isSelected) Text(text = item.year, fontSize = 10.sp, color = Color.Gray, lineHeight = 10.sp) else Spacer(modifier = Modifier.height(10.dp)); Text(text = item.month, fontSize = 12.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, color = if (isSelected) Color.Black else Color.Gray, lineHeight = 14.sp) }
+        Column(modifier = Modifier.fillMaxWidth().weight(1f), horizontalAlignment = Alignment.CenterHorizontally) { Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.BottomCenter) { if (item.amount > 0) Box(modifier = Modifier.fillMaxWidth(0.5f).fillMaxHeight(barHeightRatio).background(if (isSelected) Color.Black else Color.Black.copy(alpha = 0.3f), shape = MaterialTheme.shapes.extraSmall)) }; Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) { if (item.amount < 0) Box(modifier = Modifier.fillMaxWidth(0.5f).fillMaxHeight(barHeightRatio).background(if (isSelected) Color.Red else Color.Red.copy(alpha = 0.3f), shape = MaterialTheme.shapes.extraSmall)) } }
     }
 }
