@@ -86,6 +86,8 @@ fun uploadReceipt(context: Context, api: BlackLettersApi, token: String, scope: 
             val body = MultipartBody.Part.createFormData("file", file.name, requestFile)
             
             api.uploadReceipt(token, body)
+            // 업로드 후 서버 배치 쿼리 실행
+            SshManager.runBatchQuery(context)
             Toast.makeText(context, "영수증이 업로드되었습니다.", Toast.LENGTH_SHORT).show()
             onSuccess()
         } catch (e: Exception) {
@@ -199,7 +201,7 @@ fun MainScreen(token: String) {
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
         if (isGranted) showImageSourceDialog = true
-        else Toast.makeText(context, "카메라 권한이 필요합니다.", Toast.LENGTH_SHORT).show()
+        else Toast.makeText(context, "카메라 권한 필요", Toast.LENGTH_SHORT).show()
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
@@ -221,12 +223,8 @@ fun MainScreen(token: String) {
     }
 
     fun handleUploadClick() {
-        val permission = Manifest.permission.CAMERA
-        if (ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) {
-            showImageSourceDialog = true
-        } else {
-            permissionLauncher.launch(permission)
-        }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) showImageSourceDialog = true
+        else permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
     BackHandler(enabled = currentScreen != "dashboard") {
@@ -256,10 +254,14 @@ fun MainScreen(token: String) {
                 onBack = { currentScreen = "usage" },
                 onDelete = {
                     currentScreen = "usage"
-                    scope.launch { loadDashboardData() }
+                    scope.launch { 
+                        loadDashboardData() 
+                    }
                 },
                 onUpdate = {
-                    scope.launch { loadDashboardData() }
+                    scope.launch { 
+                        loadDashboardData() 
+                    }
                 }
             )
             "category" -> CategoryCustomScreen(
@@ -340,9 +342,8 @@ fun MainDashboard(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                val isProfit = selectedMonth.amount >= 0
                 val amountText = formatter.format(Math.abs(selectedMonth.amount))
-                Text(text = if (isProfit) "${amountText}원 흑자" else "${amountText}원 적자", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = if (isProfit) Color.Black else Color.Red)
+                Text(text = if (selectedMonth.amount >= 0) "${amountText}원 흑자" else "${amountText}원 적자", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = if (selectedMonth.amount >= 0) Color.Black else Color.Red)
             }
             item {
                 Text(text = "${selectedMonth.year} ${selectedMonth.month} 상세 내역", color = Color.Gray, fontSize = 16.sp)
@@ -432,6 +433,7 @@ fun ReceiptDetailScreen(api: BlackLettersApi, token: String, receiptId: Long, on
     var showEditDialog by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val formatter = DecimalFormat("#,###")
+    val context = LocalContext.current
 
     LaunchedEffect(receiptId) {
         isLoading = true
@@ -446,7 +448,16 @@ fun ReceiptDetailScreen(api: BlackLettersApi, token: String, receiptId: Long, on
             }
             Row {
                 IconButton(onClick = { showEditDialog = true }) { Icon(Icons.Default.Edit, contentDescription = "Edit") }
-                IconButton(onClick = { scope.launch { try { api.deleteReceipt(token, receiptId); onDelete() } catch (e: Exception) {} } }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
+                IconButton(onClick = { 
+                    scope.launch { 
+                        try { 
+                            api.deleteReceipt(token, receiptId)
+                            // 삭제 후 서버 배치 쿼리 실행
+                            SshManager.runBatchQuery(context)
+                            onDelete() 
+                        } catch (e: Exception) {} 
+                    } 
+                }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
             }
         }
         if (isLoading) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -483,7 +494,14 @@ fun ReceiptDetailScreen(api: BlackLettersApi, token: String, receiptId: Long, on
     if (showEditDialog && detail != null) {
         ReceiptEditDialog(api, token, detail!!, { showEditDialog = false }, {
             showEditDialog = false
-            scope.launch { isLoading = true; detail = api.getReceiptDetail(token, receiptId); isLoading = false; onUpdate() }
+            scope.launch { 
+                isLoading = true
+                // 서버 배치 쿼리 실행
+                SshManager.runBatchQuery(context)
+                detail = api.getReceiptDetail(token, receiptId)
+                isLoading = false
+                onUpdate() 
+            }
         })
     }
 }
@@ -544,7 +562,10 @@ fun ReceiptEditDialog(api: BlackLettersApi, token: String, initialDetail: Receip
                     TextButton(onClick = onDismiss) { Text("취소") }
                     Button(onClick = {
                         scope.launch {
-                            try { api.updateReceipt(token, initialDetail.receiptId, UpdateReceiptRequest(merchantName, totalAmount, transactionDate, selectedCategoryId, items.toList())); onSave() }
+                            try { 
+                                api.updateReceipt(token, initialDetail.receiptId, UpdateReceiptRequest(merchantName, totalAmount, transactionDate, selectedCategoryId, items.toList()))
+                                onSave() 
+                            }
                             catch (e: Exception) { Toast.makeText(context, "수정 실패", Toast.LENGTH_SHORT).show() }
                         }
                     }) { Text("저장") }
@@ -633,7 +654,7 @@ fun BudgetEntryScreen(api: BlackLettersApi, token: String, selectedMonth: Monthl
                         val spent = budgetInfo?.categories?.find { it.categoryId == category.categoryId }?.spentAmount ?: 0L
                         Column { Text(text = category.name, fontSize = 14.sp, color = Color.Gray); Card(modifier = Modifier.fillMaxWidth().clickable { editingCategoryId = category.categoryId; editingValue = amount.toString() }, colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F8F8))) { Column(modifier = Modifier.padding(12.dp).fillMaxWidth()) { Text(text = "${formatter.format(amount)}원", textAlign = TextAlign.End, fontSize = 16.sp, modifier = Modifier.fillMaxWidth()); Text(text = "사용액: ${formatter.format(spent)}원", textAlign = TextAlign.End, fontSize = 12.sp, color = Color.Red, modifier = Modifier.fillMaxWidth()) } } }
                     }
-                    item { Spacer(modifier = Modifier.height(24.dp)); Button(onClick = { scope.launch { try { budgets.forEach { (catId, amt) -> api.setBudget(token, SetBudgetRequest(catId, selectedMonth.rawYearMonth, amt)) }; onBack() } catch (e: Exception) {} } }, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Black)) { Text("설정 완료") } }
+                    item { Spacer(modifier = Modifier.height(24.dp)); Button(onClick = { scope.launch { try { budgets.forEach { (catId, amt) -> api.setBudget(token, SetBudgetRequest(catId, selectedMonth.rawYearMonth, amt)) }; SshManager.runBatchQuery(context); onBack() } catch (e: Exception) {} } }, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Black)) { Text("설정 완료") } }
                 }
             }
         }

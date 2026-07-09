@@ -34,7 +34,7 @@ object SshManager {
             config["StrictHostKeyChecking"] = "no" // 처음 접속 시 yes 입력 방지
             session.setConfig(config)
 
-            session.connect(10000) // 10초 타임아웃
+            session.connect(15000) // 15초 타임아웃
 
             val command = "docker exec -i blackletters-mysql mysql -u root -pblackletters1234 --default-character-set=utf8mb4 receipt_app < monthly_summary_batch.sql"
             val channel = session.openChannel("exec") as ChannelExec
