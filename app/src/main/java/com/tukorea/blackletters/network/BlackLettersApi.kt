@@ -211,6 +211,10 @@ interface BlackLettersApi {
         @Body request: SetBudgetRequest
     ): Budget
 
+    // 배치 쿼리 실행 API
+    @POST("/api/v1/admin/batch")
+    suspend fun runBatchQuery(@Header("Authorization") token: String): retrofit2.Response<Unit>
+
     companion object {
         private const val BASE_URL = "http://43.202.24.80:8080"
 

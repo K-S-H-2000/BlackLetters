@@ -11,7 +11,6 @@ composeBom = "2024.04.01"
 retrofit = "2.9.0"
 okhttp = "4.12.0"
 kakao = "2.20.1"
-jsch = "0.2.20"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -33,7 +32,6 @@ retrofit-gson = { group = "com.squareup.retrofit2", name = "converter-gson", ver
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
 kakao-user = { group = "com.kakao.sdk", name = "v2-user", version.ref = "kakao" }
-jsch = { group = "com.github.mwiede", name = "jsch", version.ref = "jsch" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
